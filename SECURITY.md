@@ -4,8 +4,9 @@
 
 Every daily run verifies the tree before publishing it:
 
-- `texlive.tlpdb` is checked against its SHA-512 and its GPG signature, with the TeX Live
-  primary key fingerprint pinned in `Taskfile.yml`.
+- `texlive.tlpdb` and the three installers are checked against their SHA-512 and GPG
+  signatures, with the TeX Live primary key fingerprint pinned in `Taskfile.yml`. A
+  signature from an expired or revoked key is rejected.
 - Every package container is checked against the `containerchecksum` recorded in the
   signed tlpdb.
 - A tree that fails either check is never published; the previous good copy stays live.

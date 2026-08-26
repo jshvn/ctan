@@ -74,8 +74,8 @@ current TeX Live release and moves to the next one when upstream does.</p>
 <h2>How it works</h2>
 
 <p>Once a day GitHub Actions runs a job to sync the tlnet directory to R2. It verifies <code>texlive.tlpdb</code>
-against its SHA-512 and GPG signature (via pinned TeX Live key) and every package container against
-its checksum. Every step is in the
+and the installers against their SHA-512 and GPG signatures (via pinned TeX Live key) and every package
+container against its checksum. Every step is in the
 <a href="https://github.com/jshvn/ctan/blob/main/Taskfile.yml"><code>Taskfile.yml</code></a>.</p>
 
 <strong><p>Is it fresh?</p></strong> 

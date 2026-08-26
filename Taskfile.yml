@@ -75,11 +75,18 @@ tasks:
     desc: Refuse to publish a tree that is tampered, mid-update, missing or corrupt containers, or holding duplicates
     dir: '{{.STAGING}}/tlpkg'
     cmds:
-      - shasum -a 512 -c texlive.tlpdb.sha512
-      # gpgv reads the keyring as a plain file, so nothing from the mirror is imported before
-      # it is authenticated. The keyring came from the same mirror as the signature, so pin
-      # the fingerprint: VALIDSIG's last field is the primary key that signed.
-      - gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
+      # The tlpdb and the installers at the tree root each carry a signed sha512; the
+      # installers are the only files the tlpdb's checksums do not cover. gpgv reads the
+      # keyring as a plain file, so nothing from the mirror is imported before it is
+      # authenticated. The keyring came from the same mirror as the signature, so pin the
+      # fingerprint: VALIDSIG's last field is the primary key that signed. GOODSIG as well,
+      # because gpgv reports an expired or revoked key as VALIDSIG with exit 0.
+      - >-
+        for f in texlive.tlpdb.sha512 ../install-tl*.sha512; do
+        (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
+        gpgv --status-fd 1 --keyring {{.STAGING}}/tlpkg/gpg/pubring.gpg "$f.asc" "$f"
+        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}')
+        || exit 1; done
       # A versioned container next to its unversioned copy would double storage.
       - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
       # Every container the tlpdb names must exist and match its sha512, so a tree caught
@@ -158,7 +165,7 @@ tasks:
         | Fetched from CTAN | $(rs 'Number of regular files transferred') files, $(mb "$(rs 'Total transferred file size')"); $(rs 'Number of deleted files') removed upstream |
         | Published to R2 | $(n upload) uploaded, $(n delete) deleted |
         | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of the {{.LIMIT_MB}} MiB limit |
-        | Signature | texlive.tlpdb.sha512 signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
+        | Signature | texlive.tlpdb.sha512 and the installers signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
         | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
         | Landing page | [{{.SITE}}]({{.SITE}}/), re-uploaded after this summary |
 

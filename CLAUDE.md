@@ -63,8 +63,13 @@ in this file and in Taskfile comments, not there.
   tlmgr config carries the path.
 - `verify` pins the TeX Live primary key fingerprint; the keyring comes from the mirror being
   verified, so the pin is the only real check. Rotate only against
-  https://www.tug.org/texlive/verify.html. It then checks every container against the
-  tlpdb's `containerchecksum` fields; source containers are `<name>.source.tar.xz`.
+  https://www.tug.org/texlive/verify.html. It also requires GOODSIG: gpgv reports an expired
+  or revoked key as VALIDSIG with exit 0, and tlmgr installs from one anyway, so the mirror is
+  stricter than the client by choice. The signing subkey expires 2027-07-13; upstream extends
+  it yearly and the new keyring arrives with the tree. The same check covers the installers at
+  the tree root, the only files the tlpdb's checksums do not reach. It then checks every
+  container against the tlpdb's `containerchecksum` fields; source containers are
+  `<name>.source.tar.xz`.
 - `page` streams `site/index.html` through `sed` (the `<!--UPDATED-->` placeholder becomes
   the sync time) into `aws s3 cp -`; the checked-in file is the only copy. The page repeats
   the README's prose by design, so a README edit is a page edit too. A Cloudflare Transform
@@ -119,8 +124,8 @@ weekly.
 - `task page` fails at the upload without R2 credentials; open `site/index.html` directly,
   or run its `sed` by hand to see the date filled in.
 - `task verify` needs a full `staging/` (the container check reads every archive); with only
-  `tlpkg/` present the first two commands still exercise sha512, gpgv and the pin. A partial
-  `archive/` fails the container check by design.
+  `tlpkg/` and the root `install-tl*` files present the first command still exercises sha512,
+  gpgv, GOODSIG and the pin. A partial `archive/` fails the container check by design.
 - `publish` needs R2 credentials in `AWS_*` env vars (see the Taskfile header); there is no
   mock, and the AWS CLI is not installed locally by default.
 - Is the mirror fresh? `curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512`
