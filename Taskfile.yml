@@ -19,6 +19,11 @@ vars:
   # Landing page for https://ctan.ijosh.com/: README.md rendered by GitHub's Markdown API
   # into site/template.html. A Cloudflare Transform Rule rewrites "/" to "/index.html".
   PAGE: '{{.ROOT_DIR}}/site/index.html'
+  SITE: https://ctan.ijosh.com
+  # Stage output that report reads back. Outside staging so it is never uploaded.
+  RUN: /tmp/tlnet-run
+  # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
+  TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
   # R2 free tier is 10 GB-month; both limits are decimal GB in MiB (the smaller unit,
   # so a billing-side GB never comes out larger than what we measured).
   HARD_MB: 9537   # 10 GB: never publish a tree that would bill
@@ -43,25 +48,25 @@ tasks:
       - {task: publish}
       - {task: smoke}
       - {task: ping}
+      # Before the soft guard, so a run that fails only on the 9 GB alert still has a summary.
+      - {task: report}
       - {task: guard, vars: {LIMIT_MB: '{{.SOFT_MB}}'}}
 
   fetch:
     desc: Pull tlnet, dereferencing symlinks (tlmgr requests foo.tar.xz, never foo.r123.tar.xz)
+    set: [pipefail]   # tee must never mask a failed rsync
     cmds:
-      - mkdir -p {{.STAGING}}
+      - mkdir -p {{.STAGING}} {{.RUN}}
       # -L turns each unversioned symlink into a real file; the exclude drops the
       # versioned originals so nothing is stored twice.
       - >-
         rsync -rLt {{.RSYNC_TIMEOUTS}} --delete --delete-excluded --partial --info=stats1
         --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
-        {{.SOURCE}} {{.STAGING}}/
+        {{.SOURCE}} {{.STAGING}}/ | tee {{.RUN}}/fetch.txt
 
   verify:
     desc: Refuse to publish a tree that is tampered, mid-update, missing or corrupt containers, or holding duplicates
     dir: '{{.STAGING}}/tlpkg'
-    vars:
-      # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
-      TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
     env:
       # Short path on purpose: gpg-agent's unix socket has a ~100 char path limit.
       GNUPGHOME: /tmp/tlnet-gnupg
@@ -105,11 +110,13 @@ tasks:
 
   publish:
     desc: Containers first, then tlpdb + deletions, so no client sees a tlpdb that names a missing file
+    set: [pipefail]   # tee must never mask a failed upload
     env:
       AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
     cmds:
-      - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
-      - aws s3 sync {{.AWS_FLAGS}} --delete {{.STAGING}} {{.BUCKET}}
+      - mkdir -p {{.RUN}}
+      - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive | tee {{.RUN}}/publish.txt
+      - aws s3 sync {{.AWS_FLAGS}} --delete {{.STAGING}} {{.BUCKET}} | tee -a {{.RUN}}/publish.txt
       # Bucket root, outside the synced prefix, so --delete above never touches it. no-cache so
       # the edge and browsers refetch the page every visit; the mirror files keep their own TTL.
       - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
@@ -123,6 +130,36 @@ tasks:
     desc: Dead man's switch; healthchecks.io emails when a day passes without this (skipped if HEALTHCHECK_URL is unset)
     cmds:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
+
+  report:
+    desc: Append the run summary to the Actions job page (stdout elsewhere) from the fetch and publish output in RUN
+    silent: true   # do not echo the heredoc into the job log
+    cmds:
+      # rs: one number from the rsync --info=stats1 block. mb: bytes with commas to MB. n: aws s3 sync lines by verb.
+      - |
+        rs() { sed -n "s/^$1: *\([0-9,]*\).*/\1/p" {{.RUN}}/fetch.txt; }
+        mb() { awk -v b="$1" 'BEGIN { gsub(",", "", b); printf "%.1f MB", b / 1e6 }'; }
+        n() { grep -c "^$1:" {{.RUN}}/publish.txt || true; }
+        cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
+        ## Sync succeeded, $(date -u '+%Y-%m-%d %H:%M UTC')
+
+        | | |
+        |---|---|
+        | Mirror | $(sed -n 's/^Number of files: .*reg: \([0-9,]*[0-9]\).*/\1/p' {{.RUN}}/fetch.txt) files, $(mb "$(rs 'Total file size')") at [{{.URL}}/]({{.URL}}/) |
+        | Fetched from CTAN | $(rs 'Number of regular files transferred') files, $(mb "$(rs 'Total transferred file size')"); $(rs 'Number of deleted files') removed upstream |
+        | Published to R2 | $(n upload) uploaded, $(n delete) deleted |
+        | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of {{.SOFT_MB}} MiB alert / {{.HARD_MB}} MiB hard limit |
+        | Signature | texlive.tlpdb.sha512 signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
+        | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
+        | Landing page | [{{.SITE}}]({{.SITE}}/) updated |
+
+        <details><summary>rsync stats</summary>
+
+        \`\`\`
+        $(cat {{.RUN}}/fetch.txt)
+        \`\`\`
+        </details>
+        EOF
 
   size:
     desc: Dry-run against upstream and report file count and bytes (no download)

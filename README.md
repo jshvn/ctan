@@ -51,6 +51,7 @@ A GitHub Actions cron runs `task sync` once a day. Every step is in
    `texlive.tlpdb` that names a file the bucket lacks.
 5. **smoke**: read `texlive.tlpdb.sha512` back through the public URL and compare.
 6. **ping**: tell healthchecks.io the run completed.
+7. **report**: write the numbers above to the run's summary on GitHub.
 
 A failed run emails me. A run that never happens trips healthchecks.io.
 

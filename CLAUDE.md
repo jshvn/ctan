@@ -41,6 +41,10 @@ in this file and in Taskfile comments, not there.
 - `sync` order is load-bearing around `guard`: the 10 GB check before `page`/`publish`
   (never bill), the 9 GB check after (alert without an outage). A failed run is the alert;
   do not add a notification dependency.
+- `fetch` and `publish` `tee` their output into `RUN` (`/tmp/tlnet-run`) for `report`, under
+  `set: [pipefail]` so `tee` never masks a failed rsync or upload. `report` counts
+  `upload:`/`delete:` lines from that file, not the job log, so the log-capture gap below
+  does not affect it.
 - `ping` sits after `smoke` and before the soft `guard`. Later: every size warning becomes two
   emails. Earlier: a broken domain looks alive.
 - Objects live under `systems/texlive/tlnet/` in the bucket. Do not move them; every user's
@@ -78,7 +82,7 @@ domain. Scheduled runs push the daily delta.
 
 Not yet verified on a run: `page`, the `index.html` upload and its `no-cache` header at the
 edge (`curl -sI https://ctan.ijosh.com/index.html` should show it, not `max-age=86400`),
-and the Transform Rule for `/`. The failure email and the budget alert have not fired.
+`report`, and the Transform Rule for `/`. The failure email and the budget alert have not fired.
 
 Dashboard setup that exists and would need redoing on a new account: R2 bucket `tlnet`;
 API token Object Read & Write scoped to it; custom domain `ctan.ijosh.com`; lifecycle rule
@@ -95,6 +99,8 @@ weekly.
 - `task guard STAGING=<dir> LIMIT_MB=<n>` exercises the size check against any directory.
 - `task smoke URL=file:///<dir> STAGING=<dir>` exercises the read-back check offline.
 - `task ping` is a no-op without `HEALTHCHECK_URL`; set it to any `file://` URL to exercise it.
+- `task report RUN=<dir> STAGING=<dir>` renders the summary to stdout from a canned
+  `fetch.txt` (rsync `--info=stats1` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
 - `task page` renders the README locally (needs `api.github.com`); open `site/index.html`.
 - `task size` is the live upstream dry run (must stay under 10 GB). If it hangs, the master
   is stalling on recursive listing; the rsync `--timeout` turns that into an error in CI.
