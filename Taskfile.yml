@@ -9,18 +9,23 @@ version: '3'
 vars:
   # The CTAN master host. Secondary mirrors can lag it by a day; the master cannot.
   SOURCE: rsync://rsync.dante.ctan.org/CTAN/systems/texlive/tlnet/
-  # A stalled sender fails in 5 minutes instead of holding the job to its 120-minute limit.
+  # A stalled sender fails in 5 minutes instead of holding the job to its 30-minute limit.
   RSYNC_TIMEOUTS: --timeout=300 --contimeout=60
   STAGING: '{{.ROOT_DIR}}/staging'
+  # The custom domain on the bucket. Every public URL and the page header derive from it, so
+  # a fork changes only this line.
+  HOST: ctan.ijosh.com
   # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
+  # Bucket names are per account, so a fork keeps the name tlnet.
   PREFIX: systems/texlive/tlnet
   BUCKET: s3://tlnet/{{.PREFIX}}
-  URL: https://ctan.ijosh.com/systems/texlive/tlnet
+  URL: https://{{.HOST}}/{{.PREFIX}}
   # Landing page for https://ctan.ijosh.com/: README.md rendered by GitHub's Markdown API
-  # into site/template.html. A Cloudflare Transform Rule rewrites "/" to "/index.html".
+  # into site/template.html, then uploaded to the bucket root. A Cloudflare Transform Rule
+  # rewrites "/" to "/index.html".
   PAGE: '{{.ROOT_DIR}}/site/index.html'
-  SITE: https://ctan.ijosh.com
+  SITE: https://{{.HOST}}
   # Stage output that report reads back. Outside staging so it is never uploaded.
   RUN: /tmp/tlnet-run
   # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
@@ -35,22 +40,27 @@ vars:
   # add --size-only. aws.config keeps every upload a single PutObject.
   AWS_FLAGS: --no-progress
 
+env:
+  AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
+
 tasks:
   default:
     cmds: [{task: sync}]
 
   sync:
-    desc: fetch -> verify -> publish -> smoke -> ping; refuses to bill past 10 GB, alerts past 9 GB
+    desc: fetch -> verify -> publish -> smoke -> report -> ping -> page; refuses to bill past 10 GB, alerts past 9 GB
     cmds:
       - {task: fetch}
       - {task: verify}
       - {task: guard, vars: {LIMIT_MB: '{{.HARD_MB}}'}}
-      - {task: page}
       - {task: publish}
       - {task: smoke}
-      - {task: ping}
-      # Before the soft guard, so a run that fails only on the 9 GB alert still has a summary.
+      # report, then ping, then page: a healthchecks blip cannot lose the summary, and a broken
+      # landing page is one email on a fresh mirror. All before the soft guard, so a run that
+      # fails only on the 9 GB alert still has a summary and sends one email, not two.
       - {task: report}
+      - {task: ping}
+      - {task: page}
       - {task: guard, vars: {LIMIT_MB: '{{.SOFT_MB}}'}}
 
   fetch:
@@ -68,15 +78,12 @@ tasks:
   verify:
     desc: Refuse to publish a tree that is tampered, mid-update, missing or corrupt containers, or holding duplicates
     dir: '{{.STAGING}}/tlpkg'
-    env:
-      # Short path on purpose: gpg-agent's unix socket has a ~100 char path limit.
-      GNUPGHOME: /tmp/tlnet-gnupg
     cmds:
       - shasum -a 512 -c texlive.tlpdb.sha512
-      - mkdir -p -m 700 "$GNUPGHOME" && gpg -q --import gpg/pubring.gpg
-      # The keyring came from the same mirror as the signature, so pin the
-      # fingerprint: VALIDSIG's last field is the primary key that signed.
-      - gpg --status-fd 1 --verify texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
+      # gpgv reads the keyring as a plain file, so nothing from the mirror is imported before
+      # it is authenticated. The keyring came from the same mirror as the signature, so pin
+      # the fingerprint: VALIDSIG's last field is the primary key that signed.
+      - gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
       # A versioned container next to its unversioned copy would double storage.
       - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
       # Every container the tlpdb names must exist and match its sha512, so a tree caught
@@ -96,7 +103,7 @@ tasks:
       - 'used=$(du -sm {{.STAGING}} | cut -f1); test "$used" -le {{.LIMIT_MB}} || { echo "staging is ${used} MiB, over the {{.LIMIT_MB}} MiB limit" >&2; exit 1; }'
 
   page:
-    desc: Render README.md to site/index.html with repo/site links in the header and the sync date in the footer
+    desc: Render README.md to site/index.html (host in the header, sync date in the footer) and upload it to the bucket root
     dir: '{{.ROOT_DIR}}'
     cmds:
       # GITHUB_TOKEN (automatic in Actions) lifts the per-IP rate limit shared by all runners.
@@ -105,15 +112,16 @@ tasks:
         curl -fsS -m 30 -X POST --data-binary @README.md -H 'Content-Type: text/plain'
         -H "Authorization: ${GITHUB_TOKEN:+Bearer $GITHUB_TOKEN}"
         -o site/body.html https://api.github.com/markdown/raw
-      - sed -e "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" -e '/<!--README-->/r site/body.html' -e '/<!--README-->/d' site/template.html > {{.PAGE}}
+      - sed -e "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" -e 's|<!--HOST-->|{{.HOST}}|g' -e '/<!--README-->/r site/body.html' -e '/<!--README-->/d' site/template.html > {{.PAGE}}
       - rm site/body.html
       - grep -q 'class="markdown-heading"' {{.PAGE}}
+      # Bucket root, outside the mirror prefix, so the stale listing never sees it. no-cache so
+      # the edge and browsers refetch the page every visit; the mirror files are not edge-cached at all.
+      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
 
   publish:
     desc: Containers first, then tlpdb, then deletions, so no client sees a tlpdb that names a missing file
     set: [pipefail]   # tee must never mask a failed upload
-    env:
-      AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
     cmds:
       - mkdir -p {{.RUN}}
       - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive | tee {{.RUN}}/publish.txt
@@ -127,9 +135,6 @@ tasks:
       # ponytail: one DeleteObject per key (free on R2, ~1 s each). Batch with s3api
       # delete-objects if a release rollover ever removes thousands of files at once.
       - xargs -r -I{} aws s3 rm s3://tlnet/{} < {{.RUN}}/stale.txt | tee -a {{.RUN}}/publish.txt
-      # Bucket root, outside the mirror prefix, so the listing above never sees it. no-cache so
-      # the edge and browsers refetch the page every visit; the mirror files keep their own TTL.
-      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
 
   stale:
     desc: Keys in RUN/remote.txt (the bucket listing) that staging no longer has, written to RUN/stale.txt
@@ -167,7 +172,7 @@ tasks:
         | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of {{.SOFT_MB}} MiB alert / {{.HARD_MB}} MiB hard limit |
         | Signature | texlive.tlpdb.sha512 signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
         | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
-        | Landing page | [{{.SITE}}]({{.SITE}}/) updated |
+        | Landing page | [{{.SITE}}]({{.SITE}}/), re-rendered after this summary |
 
         <details><summary>rsync stats</summary>
 

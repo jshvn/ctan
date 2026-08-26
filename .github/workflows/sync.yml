@@ -9,7 +9,7 @@ concurrency: sync
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30   # four times the slowest run seen; every step has its own timeout
     env:
       # The AWS CLI ships on ubuntu-latest; these four env vars are its whole R2 config.
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

@@ -11,7 +11,12 @@ Every daily run verifies the tree before publishing it:
 - A tree that fails either check is never published; the previous good copy stays live.
 
 `tlmgr` repeats the signature check on the client, so a tampered mirror is rejected there
-too. Read-back from the public URL is compared to what was uploaded.
+too. After each publish, the index is read back through the domain and compared with what
+was uploaded.
+
+Uploads are not atomic. Containers land first and the tlpdb that names them a minute or so
+later (around 03:35 UTC daily), and containers are overwritten in place, so a `tlmgr` run
+that overlaps the publish can see checksum errors. Rerun it.
 
 ## Reporting
 
