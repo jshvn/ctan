@@ -16,6 +16,9 @@ vars:
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
   BUCKET: s3://tlnet/systems/texlive/tlnet
   URL: https://ctan.ijosh.com/systems/texlive/tlnet
+  # Landing page for https://ctan.ijosh.com/: README.md rendered by GitHub's Markdown API
+  # into site/template.html. A Cloudflare Transform Rule rewrites "/" to "/index.html".
+  PAGE: '{{.ROOT_DIR}}/site/index.html'
   # R2 free tier is 10 GB-month; both limits are decimal GB in MiB (the smaller unit,
   # so a billing-side GB never comes out larger than what we measured).
   HARD_MB: 9537   # 10 GB: never publish a tree that would bill
@@ -36,6 +39,7 @@ tasks:
       - {task: fetch}
       - {task: verify}
       - {task: guard, vars: {LIMIT_MB: '{{.HARD_MB}}'}}
+      - {task: page}
       - {task: publish}
       - {task: smoke}
       - {task: ping}
@@ -85,6 +89,20 @@ tasks:
     cmds:
       - 'used=$(du -sm {{.STAGING}} | cut -f1); test "$used" -le {{.LIMIT_MB}} || { echo "staging is ${used} MiB, over the {{.LIMIT_MB}} MiB limit" >&2; exit 1; }'
 
+  page:
+    desc: Render README.md to site/index.html with the sync date and repo/site links in the footer
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      # GITHUB_TOKEN (automatic in Actions) lifts the per-IP rate limit shared by all runners.
+      # When it is unset the header has an empty value and curl does not send it.
+      - >-
+        curl -fsS -m 30 -X POST --data-binary @README.md -H 'Content-Type: text/plain'
+        -H "Authorization: ${GITHUB_TOKEN:+Bearer $GITHUB_TOKEN}"
+        -o site/body.html https://api.github.com/markdown/raw
+      - sed -e "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" -e '/<!--README-->/r site/body.html' -e '/<!--README-->/d' site/template.html > {{.PAGE}}
+      - rm site/body.html
+      - grep -q 'class="markdown-heading"' {{.PAGE}}
+
   publish:
     desc: Containers first, then tlpdb + deletions, so no client sees a tlpdb that names a missing file
     env:
@@ -92,6 +110,8 @@ tasks:
     cmds:
       - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
       - aws s3 sync {{.AWS_FLAGS}} --delete {{.STAGING}} {{.BUCKET}}
+      # Bucket root, outside the synced prefix, so --delete above never touches it.
+      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html {{.PAGE}} s3://tlnet/index.html
 
   smoke:
     desc: Read texlive.tlpdb.sha512 back through the public URL; proves the upload landed and the domain serves it
