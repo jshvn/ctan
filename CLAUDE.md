@@ -20,7 +20,8 @@ Everything is in four files:
 - Zero running cost: R2 free tier (10 GB-month, 1M Class A ops) and free GitHub Actions.
   Recompute any change that adds storage or uploads against the 6.8 GB baseline.
 - No shell scripts. Logic lives in `Taskfile.yml`; workflows install tools and run one task.
-- Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `curl`, `task`.
+- Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `xz`, `curl`,
+  `task`.
   Network endpoints are exactly the CTAN master, R2, the public domain and healthchecks.io.
 - Objects stay under `systems/texlive/tlnet/`; every user's `tlmgr` config carries that path.
 - Secrets are exactly four: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
@@ -69,22 +70,31 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 `verify` runs after `fetch` and before anything is uploaded. A tree that fails stays local;
 the previous good copy stays live.
 
-1. `texlive.tlpdb.sha512` and the `install-tl*.sha512` files at the tree root (the only
-   files the tlpdb's checksums do not reach) are checked with `shasum`, then their `.asc`
-   signatures with `gpgv`. The keyring is read as a plain file from the mirror being
-   verified, so nothing is imported before it is authenticated.
+1. `texlive.tlpdb.sha512`, and at the tree root the `install-tl*.sha512` and
+   `update-tlmgr-latest.*.sha512` files, are checked with `shasum`, then their `.asc`
+   signatures with `gpgv`. These are the only signed files outside `archive/`. The keyring
+   is read as a plain file from the mirror being verified, so nothing is imported before
+   it is authenticated.
 2. Because the keyring came from the same mirror as the signature, the only real check is
    the pinned fingerprint `TL_KEY`: `VALIDSIG` must end in it. Rotate it only against
    https://www.tug.org/texlive/verify.html. `GOODSIG` is also required because gpgv reports
    an expired or revoked key as `VALIDSIG` with exit 0 (tlmgr accepts that; the mirror is
    stricter). The signing subkey expires 2027-07-13; upstream extends it yearly.
-3. No `*.r[0-9]*.tar.xz` survives in `archive/`.
-4. Every container the tlpdb names exists and matches its `containerchecksum`,
+3. `texlive.tlpdb.xz`, the file `tlmgr` actually downloads, decompresses to the verified
+   `texlive.tlpdb` byte for byte.
+4. No `*.r[0-9]*.tar.xz` survives in `archive/`.
+5. Every container the tlpdb names exists and matches its `containerchecksum`,
    `doccontainerchecksum` or `srccontainerchecksum` (source containers are
    `<name>.source.tar.xz`). A tree caught between a tlpdb update and its containers fails.
 
 After `publish`, `smoke` reads `texlive.tlpdb.sha512` back through the public domain and
 `cmp`s it with staging. `tlmgr` repeats the signature check on the client.
+
+Nothing else is signed upstream, so the rest is copied as-is: `install-tl`,
+`install-tl-windows.bat`, `README.md` and `texlive.tlpdb.md5`, plus `tlpkg/TeXLive/`,
+`tlpkg/installer/`, `tlpkg/tlperl/`, `tlpkg/tltcl/` and `tlpkg/translations/`. No TeX Live
+tool fetches those from a repository URL; they serve installs run from a local copy of the
+tree.
 
 ## Repository guardrails
 
@@ -109,9 +119,9 @@ After `publish`, `smoke` reads `texlive.tlpdb.sha512` back through the public do
   `fetch.txt` (rsync `--stats` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
 - `task page` fails at the upload without credentials; run its `sed` by hand to see the
   date filled in.
-- `task verify` needs a full `staging/`; with only `tlpkg/` and the root `install-tl*`
-  files the first step still exercises sha512, gpgv, GOODSIG and the pin. A partial
-  `archive/` fails the container check, as it should.
+- `task verify` needs a full `staging/`; with only `tlpkg/` and the root `install-tl*` and
+  `update-tlmgr-latest.*` files, every step but the last still runs (sha512, gpgv, GOODSIG,
+  the pin, the `.xz` match). A partial `archive/` fails the container check, as it should.
 - `publish` needs R2 credentials in `AWS_*` env vars; there is no mock, and the AWS CLI is
   not installed locally by default.
 - Is the mirror fresh?

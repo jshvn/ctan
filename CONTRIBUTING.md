@@ -6,7 +6,8 @@ Pull requests are welcome, especially ones that make the pipeline smaller.
 
 - All logic lives in `Taskfile.yml`. Workflows install tools and run one task, nothing
   more. No shell scripts.
-- No dependencies beyond `rsync`, `aws` (AWS CLI v2), `gpg`, `shasum`, `curl` and `task`.
+- No dependencies beyond `rsync`, `aws` (AWS CLI v2), `gpg`, `shasum`, `xz`, `curl` and
+  `task`.
 - The mirror must stay inside the R2 free tier (10 GB, 1M Class A ops a month). If a
   change adds storage or upload operations, say by how much in the PR.
 - Objects stay under `systems/texlive/tlnet/`; every user's `tlmgr` config carries that
