@@ -110,8 +110,9 @@ tasks:
     cmds:
       - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
       - aws s3 sync {{.AWS_FLAGS}} --delete {{.STAGING}} {{.BUCKET}}
-      # Bucket root, outside the synced prefix, so --delete above never touches it.
-      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html {{.PAGE}} s3://tlnet/index.html
+      # Bucket root, outside the synced prefix, so --delete above never touches it. no-cache so
+      # the edge and browsers refetch the page every visit; the mirror files keep their own TTL.
+      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
 
   smoke:
     desc: Read texlive.tlpdb.sha512 back through the public URL; proves the upload landed and the domain serves it

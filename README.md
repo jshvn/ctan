@@ -1,8 +1,8 @@
 # ctan
 
 [![sync](https://github.com/jshvn/ctan/actions/workflows/sync.yml/badge.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
-[![license](https://img.shields.io/github/license/jshvn/ctan)](LICENSE)
-[![mirror](https://healthchecks.io/badge/8955b5d3-ba3b-4e8a-ac39-8501494333f5/otTXcui6-2.svg)](https://ctan.ijosh.com/)
+[![license](https://img.shields.io/github/license/jshvn/ctan)](https://github.com/jshvn/ctan/blob/main/LICENSE)
+[![mirror](https://healthchecks.io/badge/8955b5d3-ba3b-4e8a-ac39-8501494333f5/otTXcui6-2.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 
 A daily mirror of `CTAN/systems/texlive/tlnet`, the directory `tlmgr` installs and updates
 from, served from Cloudflare R2. It is not a full CTAN mirror: only tlnet is here, with every
