@@ -1,0 +1,23 @@
+name: sync
+on:
+  schedule:
+    - cron: '30 3 * * *'   # dante publishes tlnet daily; pick a slot after the mirrors catch up
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency: sync
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: go-task/setup-task@v2
+      - run: sudo apt-get install -y --no-install-recommends rclone   # noble ships >= 1.59, which R2 needs
+      - run: task sync

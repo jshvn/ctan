@@ -1,0 +1,70 @@
+# Mirror the TeX Live network repository (CTAN systems/texlive/tlnet) into a
+# Cloudflare R2 bucket. Runs the same way locally and inside GitHub Actions.
+#
+# Remote "r2" is defined entirely by environment variables (no rclone.conf):
+#   RCLONE_CONFIG_R2_TYPE=s3  RCLONE_CONFIG_R2_PROVIDER=Cloudflare
+#   RCLONE_CONFIG_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+#   RCLONE_CONFIG_R2_ACCESS_KEY_ID / RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
+version: '3'
+
+vars:
+  # Any CTAN mirror with rsync; MIT is near the Azure US runners.
+  SOURCE: rsync://mirrors.mit.edu/CTAN/systems/texlive/tlnet/
+  STAGING: '{{.ROOT_DIR}}/staging'
+  BUCKET: r2:tlnet
+  # --checksum: local MD5 vs R2 ETag, so an in-place revision bump of foo.tar.xz
+  #   (same name, maybe same size) is always detected.
+  # --s3-upload-cutoff 200M: largest tlnet file is ~145 MB, so every upload is a
+  #   single PutObject (one Class A op) instead of a multipart trio.
+  # --s3-no-check-bucket: object-scoped R2 tokens cannot HeadBucket.
+  RCLONE_FLAGS: >-
+    --checksum --transfers 32 --checkers 32 --s3-upload-cutoff 200M
+    --s3-no-check-bucket --fast-list --stats-one-line -v
+
+tasks:
+  default:
+    cmds: [{task: sync}]
+
+  sync:
+    desc: fetch -> verify -> publish
+    cmds: [{task: fetch}, {task: verify}, {task: publish}]
+
+  fetch:
+    desc: Pull tlnet, dereferencing symlinks (tlmgr requests foo.tar.xz, never foo.r123.tar.xz)
+    cmds:
+      - mkdir -p {{.STAGING}}
+      # -L turns each unversioned symlink into a real file; the exclude drops the
+      # versioned originals so nothing is stored twice.
+      - >-
+        rsync -rLt --delete --delete-excluded --partial --info=stats1
+        --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
+        {{.SOURCE}} {{.STAGING}}/
+
+  verify:
+    desc: Refuse to publish a tree caught mid-update or tampered upstream
+    dir: '{{.STAGING}}/tlpkg'
+    vars:
+      # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
+      TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
+    env:
+      # Short path on purpose: gpg-agent's unix socket has a ~100 char path limit.
+      GNUPGHOME: /tmp/tlnet-gnupg
+    cmds:
+      - shasum -a 512 -c texlive.tlpdb.sha512
+      - mkdir -p -m 700 "$GNUPGHOME" && gpg -q --import gpg/pubring.gpg
+      # The keyring came from the same mirror as the signature, so pin the
+      # fingerprint: VALIDSIG's last field is the primary key that signed.
+      - gpg --status-fd 1 --verify texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
+
+  publish:
+    desc: Containers first, then tlpdb + deletions, so no client sees a tlpdb that names a missing file
+    cmds:
+      - rclone copy {{.RCLONE_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
+      - rclone sync {{.RCLONE_FLAGS}} {{.STAGING}} {{.BUCKET}}
+
+  size:
+    desc: Dry-run against upstream and report file count and bytes (no download)
+    cmds:
+      - >-
+        rsync -rLtn --stats --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
+        {{.SOURCE}} /nonexistent | grep -E 'Number of files:|Total file size'
