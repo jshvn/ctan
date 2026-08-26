@@ -14,7 +14,8 @@ vars:
   STAGING: '{{.ROOT_DIR}}/staging'
   # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
-  BUCKET: s3://tlnet/systems/texlive/tlnet
+  PREFIX: systems/texlive/tlnet
+  BUCKET: s3://tlnet/{{.PREFIX}}
   URL: https://ctan.ijosh.com/systems/texlive/tlnet
   # Landing page for https://ctan.ijosh.com/: README.md rendered by GitHub's Markdown API
   # into site/template.html. A Cloudflare Transform Rule rewrites "/" to "/index.html".
@@ -109,17 +110,33 @@ tasks:
       - grep -q 'class="markdown-heading"' {{.PAGE}}
 
   publish:
-    desc: Containers first, then tlpdb + deletions, so no client sees a tlpdb that names a missing file
+    desc: Containers first, then tlpdb, then deletions, so no client sees a tlpdb that names a missing file
     set: [pipefail]   # tee must never mask a failed upload
     env:
       AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
     cmds:
       - mkdir -p {{.RUN}}
       - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive | tee {{.RUN}}/publish.txt
-      - aws s3 sync {{.AWS_FLAGS}} --delete {{.STAGING}} {{.BUCKET}} | tee -a {{.RUN}}/publish.txt
-      # Bucket root, outside the synced prefix, so --delete above never touches it. no-cache so
+      # Never sync --delete. R2 lists a key after the keys it is a prefix of (install-tl after
+      # install-tl.zip.sha512.asc) while the CLI walks staging in byte order, so its merge-join
+      # emits both an upload and a delete for every such key and the delete can land last. The
+      # re-uploads that remain (15 keys) are harmless; deletions come from our own sorted diff.
+      - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}} {{.BUCKET}} | tee -a {{.RUN}}/publish.txt
+      - aws s3 ls --recursive {{.BUCKET}}/ | sed 's/^[^ ]* *[^ ]* *[^ ]* //' > {{.RUN}}/remote.txt
+      - {task: stale}
+      # ponytail: one DeleteObject per key (free on R2, ~1 s each). Batch with s3api
+      # delete-objects if a release rollover ever removes thousands of files at once.
+      - xargs -r -I{} aws s3 rm s3://tlnet/{} < {{.RUN}}/stale.txt | tee -a {{.RUN}}/publish.txt
+      # Bucket root, outside the mirror prefix, so the listing above never sees it. no-cache so
       # the edge and browsers refetch the page every visit; the mirror files keep their own TTL.
       - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
+
+  stale:
+    desc: Keys in RUN/remote.txt (the bucket listing) that staging no longer has, written to RUN/stale.txt
+    cmds:
+      - cd {{.STAGING}} && find . -type f | sed 's|^\./|{{.PREFIX}}/|' | LC_ALL=C sort > {{.RUN}}/local.txt
+      - test -s {{.RUN}}/local.txt   # an empty tree must never empty the bucket
+      - LC_ALL=C sort {{.RUN}}/remote.txt | LC_ALL=C comm -13 {{.RUN}}/local.txt - > {{.RUN}}/stale.txt
 
   smoke:
     desc: Read texlive.tlpdb.sha512 back through the public URL; proves the upload landed and the domain serves it
