@@ -69,6 +69,7 @@ Remaining setup, in order:
 - `task guard STAGING=<dir> LIMIT_MB=<n>` exercises the size check against any directory.
 - `task smoke URL=file:///<dir> STAGING=<dir>` exercises the read-back check offline.
 - `task ping` is a no-op without `HEALTHCHECK_URL`; set it to any `file://` URL to exercise it.
-- `task size` is the live upstream dry run (must stay under 10 GB).
+- `task size` is the live upstream dry run (must stay under 10 GB). If it hangs, the master
+  is stalling on recursive listing; the rsync `--timeout` turns that into an error in CI.
 - `task verify` runs locally after `rsync`-ing only `tlpkg/` into `staging/tlpkg/`.
 - `publish` needs R2 credentials in `RCLONE_CONFIG_R2_*` env vars; there is no mock.
