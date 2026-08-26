@@ -121,8 +121,6 @@ weekly.
   `fetch.txt` (rsync `--stats` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
 - `task page` renders the README locally (needs `api.github.com`), then fails at the upload
   without R2 credentials; `site/index.html` is already on disk by then, so open it.
-- `task size` is the live upstream dry run (must stay under 10 GB). If it hangs, the master
-  is stalling on recursive listing; the rsync `--timeout` turns that into an error in CI.
 - `task verify` needs a full `staging/` (the container check reads every archive); with only
   `tlpkg/` present the first two commands still exercise sha512, gpgv and the pin. A partial
   `archive/` fails the container check by design.

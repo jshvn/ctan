@@ -178,10 +178,3 @@ tasks:
         \`\`\`
         </details>
         EOF
-
-  size:
-    desc: Dry-run against upstream and report file count and bytes (no download)
-    cmds:
-      - >-
-        rsync -rLtn {{.RSYNC_TIMEOUTS}} --stats --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
-        {{.SOURCE}} /nonexistent | grep -E 'Number of files:|Total file size'
