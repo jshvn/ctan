@@ -61,7 +61,7 @@ tasks:
       # -L turns each unversioned symlink into a real file; the exclude drops the
       # versioned originals so nothing is stored twice.
       - >-
-        rsync -rLt {{.RSYNC_TIMEOUTS}} --delete --delete-excluded --partial --info=stats1
+        rsync -rLt {{.RSYNC_TIMEOUTS}} --delete --delete-excluded --partial --stats
         --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
         {{.SOURCE}} {{.STAGING}}/ | tee {{.RUN}}/fetch.txt
 
@@ -152,7 +152,7 @@ tasks:
     desc: Append the run summary to the Actions job page (stdout elsewhere) from the fetch and publish output in RUN
     silent: true   # do not echo the heredoc into the job log
     cmds:
-      # rs: one number from the rsync --info=stats1 block. mb: bytes with commas to MB. n: aws s3 sync lines by verb.
+      # rs: one number from the rsync --stats block. mb: bytes with commas to MB. n: aws s3 sync lines by verb.
       - |
         rs() { sed -n "s/^$1: *\([0-9,]*\).*/\1/p" {{.RUN}}/fetch.txt; }
         mb() { awk -v b="$1" 'BEGIN { gsub(",", "", b); printf "%.1f MB", b / 1e6 }'; }
@@ -160,9 +160,8 @@ tasks:
         cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
         ## Sync succeeded, $(date -u '+%Y-%m-%d %H:%M UTC')
 
-        | | |
-        |---|---|
         | Mirror | $(sed -n 's/^Number of files: .*reg: \([0-9,]*[0-9]\).*/\1/p' {{.RUN}}/fetch.txt) files, $(mb "$(rs 'Total file size')") at [{{.URL}}/]({{.URL}}/) |
+        |---|---|
         | Fetched from CTAN | $(rs 'Number of regular files transferred') files, $(mb "$(rs 'Total transferred file size')"); $(rs 'Number of deleted files') removed upstream |
         | Published to R2 | $(n upload) uploaded, $(n delete) deleted |
         | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of {{.SOFT_MB}} MiB alert / {{.HARD_MB}} MiB hard limit |
