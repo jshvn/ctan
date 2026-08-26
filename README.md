@@ -4,8 +4,8 @@
 [![license](https://img.shields.io/github/license/jshvn/ctan)](https://github.com/jshvn/ctan/blob/main/LICENSE)
 [![mirror](https://healthchecks.io/badge/8955b5d3-ba3b-4e8a-ac39-8501494333f5/otTXcui6-2.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 
-A daily mirror of `CTAN/systems/texlive/tlnet`, the directory `tlmgr` installs and updates
-from, served from Cloudflare R2. It is not a full CTAN mirror: only tlnet is here, with every
+A daily mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2. This is the directory
+`tlmgr` installs and updates from, and it is the only part of CTAN here, complete with every
 platform, docs and sources.
 
 ## How to use
@@ -25,40 +25,32 @@ install-tl -repository https://ctan.ijosh.com/systems/texlive/tlnet/
 
 To go back to CTAN's mirror rotation: `tlmgr option repository ctan`.
 
-The path mirrors CTAN's own layout, so the host works anywhere a CTAN mirror URL does.
-
-It tracks the current TeX Live release and moves to the next one when upstream does.
-
-## Why
-
-CTAN's mirror rotation kept breaking my builds: broken TLS, unreachable hosts, stale copies.
-This is one mirror I control, pulled from the CTAN master daily and verified before it goes
-live.
+The path mirrors CTAN's own layout, so the host works anywhere a CTAN mirror URL does. It
+tracks the current TeX Live release and moves to the next one when upstream does.
 
 ## How it works
 
-A GitHub Actions cron runs `task sync` once a day. Every step is in
-[`Taskfile.yml`](https://github.com/jshvn/ctan/blob/main/Taskfile.yml):
+Once a day GitHub Actions runs a job to sync the tlnet directory to R2. It verifies
+`texlive.tlpdb` against its SHA-512 and GPG signature (via pinned TeX Live key) and every
+package container against its checksum. Every step is in the
+[`Taskfile.yml`](https://github.com/jshvn/ctan/blob/main/Taskfile.yml).
 
-1. **fetch**: rsync tlnet from the CTAN master, dereferencing symlinks so each container is
-   stored once under the name `tlmgr` requests.
-2. **verify**: check `texlive.tlpdb` against its SHA-512 and GPG signature (TeX Live key
-   fingerprint pinned), then every container against the checksums the tlpdb carries. A tree
-   caught mid-update is never published.
-3. **publish**: `aws s3 sync` the containers first, then the rest, so no client ever reads a
-   `texlive.tlpdb` that names a file the bucket lacks.
-4. **smoke**: read `texlive.tlpdb.sha512` back through the public URL and compare.
-5. **report**: write the numbers above to the run's summary on GitHub.
-6. **ping**: tell healthchecks.io the run completed.
-7. **page**: upload the landing page at [ctan.ijosh.com](https://ctan.ijosh.com/).
+**Is it fresh?**
 
-A failed run emails me. A run that never happens trips healthchecks.io.
-
-Is it fresh? Check `last-modified` on the index:
+Check `last-modified` on the index:
 
 ```sh
 curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512
 ```
+
+## Why use this?
+
+`tlmgr`'s default repository is CTAN's mirror rotation: every request lands on a different
+volunteer mirror, and any one of them can be unreachable, on a slow connection, behind on
+TLS, or a few days stale.
+
+This setup ensures a consistent, reliable source for TeX Live updates built on
+[Cloudflare's network](https://cloudflare.com/network).
 
 ## Want your own?
 

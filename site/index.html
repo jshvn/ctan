@@ -53,9 +53,7 @@
 <br><span class="status">Last updated <!--UPDATED-->.</span>
 </p>
 
-<p>A daily mirror of <code>CTAN/systems/texlive/tlnet</code>, the directory <code>tlmgr</code> installs and
-updates from, served from Cloudflare R2. It is not a full CTAN mirror: only tlnet is here, with every
-platform, docs and sources.</p>
+<p>A daily mirror of <code>CTAN/systems/texlive/tlnet</code> on Cloudflare R2. This is the directory tlmgr installs and updates from, and it is the only part of CTAN here, complete with every platform, docs and sources.</p>
 
 <h2>How to use</h2>
 
@@ -75,31 +73,24 @@ current TeX Live release and moves to the next one when upstream does.</p>
 
 <h2>How it works</h2>
 
-<p>Once a day a GitHub Actions job pulls tlnet from the CTAN master, checks <code>texlive.tlpdb</code>
-against its SHA-512 and GPG signature (TeX Live key fingerprint pinned) and every package container
-against the checksums the tlpdb carries, then uploads to R2, containers first so no client ever reads
-an index that names a missing file, and reads the index back through this domain. A tree caught
-mid-update is never published; the previous good copy stays live. A failed run emails me, and a run
-that never happens trips healthchecks.io. Every step is in
+<p>Once a day GitHub Actions runs a job to sync the tlnet directory to R2. It verifies <code>texlive.tlpdb</code>
+against its SHA-512 and GPG signature (via pinned TeX Live key) and every package container against
+its checksum. Every step is in the
 <a href="https://github.com/jshvn/ctan/blob/main/Taskfile.yml"><code>Taskfile.yml</code></a>.</p>
 
-<aside>
-<p><strong>Is it fresh?</strong> The mirror badge above is green when the sync ran in the last day. For the
-exact time, read <code>last-modified</code> on the index:</p>
+<strong><p>Is it fresh?</p></strong> 
+
+<p>Check <code>last-modified</code> on the index:</p>
+
 <pre><code>curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512</code></pre>
-</aside>
+
+
 
 <h2>Why use this?</h2>
-
 <p><code>tlmgr</code>'s default repository is CTAN's mirror rotation: every request lands on a different
-volunteer mirror, and any one of them can be unreachable, behind on TLS, or a few days stale. When that
-happens mid-update, <code>tlmgr</code> fails with checksum errors and a half-updated install, usually in a
-CI job with nobody watching. Pinning one existing mirror helps until that mirror lags or goes away, and
-you find out the same way.</p>
+volunteer mirror, and any one of them can be unreachable, on a slow connection, behind on TLS, or a few days stale. </p>
 
-<p>This is one host, pulled from the CTAN master every day, verified end to end before it goes live, served
-from Cloudflare's edge worldwide, and monitored: a failed sync emails me, a missed one trips the badge
-above. If it is ever wrong, the mirror rotation is one <code>tlmgr option repository ctan</code> away.</p>
+<p>This setup ensures a consistent, reliable source for TeX Live updates built on <a href="https://cloudflare.com/network">Cloudflare's network</a>.</p>
 
 <h2>Want your own?</h2>
 
