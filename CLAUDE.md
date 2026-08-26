@@ -1,133 +1,119 @@
-# ctan -- Project Instructions for AI Agents
+# ctan
 
-## What This Is
+A daily mirror of `CTAN/systems/texlive/tlnet` (the directory `tlmgr` installs from) on
+Cloudflare R2, served at `https://ctan.ijosh.com/systems/texlive/tlnet/`. About 17,400
+files and 6.8 GB; the largest file is ~145 MB.
 
-A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served at
-`https://ctan.ijosh.com/systems/texlive/tlnet/`, with `site/index.html` as the landing page
-at `https://ctan.ijosh.com/`. All logic is in `Taskfile.yml`; `.github/workflows/sync.yml`
-installs tools and runs `task sync` on a cron; `check.yml` runs `task --dry sync` on pull
-requests. tlnet is ~17,400 files / 6.8 GB; the largest file is ~145 MB.
+Everything is in four files:
 
-`README.md` is written for users. Operational detail (guards, sizes, cost, alerting) belongs
-in this file and in Taskfile comments, not there.
+- `Taskfile.yml`: the whole pipeline. `task sync` runs
+  `fetch -> verify -> guard -> publish -> smoke -> report -> ping -> page`.
+- `.github/workflows/sync.yml`: installs `task` and runs `task sync` daily at 03:30 UTC.
+- `.github/workflows/check.yml`: runs `task --dry sync` on pull requests.
+- `site/index.html`: the landing page at `https://ctan.ijosh.com/`. It repeats the README's
+  prose, so a README edit is usually a page edit too.
 
-## Hard Constraints
+`README.md` is for users. Operational detail belongs here and in Taskfile comments.
 
-- Zero running cost: R2 free tier (10 GB-month, 1M Class A, 10M Class B) and free GitHub
-  Actions. If a change adds storage, recompute against the 6.8 GB baseline first.
-- No shell scripts. All logic lives in `Taskfile.yml`; workflows install tools and run one
-  task, nothing more.
-- No dependencies beyond `rsync`, `aws` (AWS CLI v2), `gpg` (`verify` calls its `gpgv`),
-  `shasum`, `curl`, `task`.
-  The only network endpoints are the CTAN master, R2, the public domain and healthchecks.io.
-- No AI attribution anywhere. No emojis.
+## Constraints
 
-## Gotchas
+- Zero running cost: R2 free tier (10 GB-month, 1M Class A ops) and free GitHub Actions.
+  Recompute any change that adds storage or uploads against the 6.8 GB baseline.
+- No shell scripts. Logic lives in `Taskfile.yml`; workflows install tools and run one task.
+- Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `curl`, `task`.
+  Network endpoints are exactly the CTAN master, R2, the public domain and healthchecks.io.
+- Objects stay under `systems/texlive/tlnet/`; every user's `tlmgr` config carries that path.
+- Secrets are exactly four: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+  `HEALTHCHECK_URL`. The workflow maps the first three onto the AWS CLI's env vars.
 
-- `tlmgr` requests the unversioned `archive/foo.tar.xz`; upstream stores `foo.r123.tar.xz`
-  and symlinks to it. R2 has no symlinks, so `fetch` uses `rsync -L` and excludes
-  `*.r[0-9]*.tar.xz`; `verify` fails if a versioned file survives. Storing both doubles
-  storage and breaks the free tier.
-- Files are overwritten in place on revision bumps, often at the same size. `aws s3 sync`
-  uploads when size differs or the local mtime is newer than the object's LastModified;
-  `rsync -t` keeps upstream mtimes and a bump is always built after our previous upload, so
-  the daily cadence catches them. Never add `--size-only`.
-- Keep uploads single-part: `aws.config` sets `multipart_threshold` above the largest file
-  (145 MB). The CLI default is 8 MB, and multipart costs three or more Class A ops per file.
-- `publish` order is load-bearing: `archive/` first, then the full sync (tlpdb), then the
-  deletions from `stale`, so no client reads a `texlive.tlpdb` that names a container the
-  bucket lacks. `page` uploads `index.html` afterwards, to the bucket root, outside the mirror
-  prefix so the `stale` listing never sees it, with `Cache-Control: no-cache` so the page is
-  never served stale.
-- Never add `--delete` to `aws s3 sync`. R2 lists a key after the keys it is a prefix of
-  (`install-tl` after `install-tl.zip.sha512.asc`; its end-of-key sorts like `/`, after `-`
-  and `.`), while the CLI walks staging in byte order. The merge-join then emits both an
-  `upload:` and a `delete:` for every such key (15 in tlnet: the installers and their
-  `.sha512`, `texlive.tlpdb` and its `.sha512`, two tlperl files), and whichever lands last
-  wins; on 2026-08-26 that took `texlive.tlpdb.sha512` off the mirror. Without `--delete`
-  the 15 keys are re-uploaded every run, which is harmless. Deletions are `stale`'s
-  byte-sorted `comm` of the bucket listing against staging, run through `aws s3 rm`
-  (DeleteObject is free on R2), so they cannot race an upload of the same key.
-- `guard` runs before `publish` so a tree over 10 GB is never billed; the run fails and
-  the mirror stays a day stale. It prints the size every run, so the trend is in the job
-  log. A failed run is the alert; do not add a notification dependency.
-- `fetch` and `publish` `tee` their output into `RUN` (`/tmp/tlnet-run`) for `report`, under
-  `set: [pipefail]` so `tee` never masks a failed rsync or upload. `report` counts
-  `upload:`/`delete:` lines from that file (`aws s3 rm` prints the same `delete:` form), not
-  the job log, so the log-capture gap below does not affect it.
-- After `smoke` the order is `report -> ping -> page`. `report` before `ping`: a
-  healthchecks blip cannot lose the summary. `page` after `ping`: a broken landing page is
-  one email on a fresh mirror, never a stale one. `ping` after `smoke`: a broken domain never
-  looks alive.
-- Objects live under `systems/texlive/tlnet/` in the bucket. Do not move them; every user's
-  tlmgr config carries the path.
-- `verify` pins the TeX Live primary key fingerprint; the keyring comes from the mirror being
-  verified, so the pin is the only real check. Rotate only against
-  https://www.tug.org/texlive/verify.html. It also requires GOODSIG: gpgv reports an expired
-  or revoked key as VALIDSIG with exit 0, and tlmgr installs from one anyway, so the mirror is
-  stricter than the client by choice. The signing subkey expires 2027-07-13; upstream extends
-  it yearly and the new keyring arrives with the tree. The same check covers the installers at
-  the tree root, the only files the tlpdb's checksums do not reach. It then checks every
-  container against the tlpdb's `containerchecksum` fields; source containers are
-  `<name>.source.tar.xz`.
-- `page` streams `site/index.html` through `sed` (the `<!--UPDATED-->` placeholder becomes
-  the sync time) into `aws s3 cp -`; the checked-in file is the only copy. The page repeats
-  the README's prose by design, so a README edit is a page edit too. A Cloudflare Transform
-  Rule rewrites `/` to `/index.html`; without it the root is a 404 while the mirror path
-  still works.
+## Must knows
+
+Each of these is a bug that has happened or a bill that would. Do not undo them.
+
+- **No versioned containers.** `tlmgr` requests `archive/foo.tar.xz`; upstream stores
+  `foo.r123.tar.xz` and symlinks to it. R2 has no symlinks, so `fetch` uses `rsync -L` and
+  excludes `*.r[0-9]*.tar.xz`. Storing both doubles storage and breaks the free tier.
+- **Never `--size-only`.** Revision bumps overwrite files in place, often at the same size.
+  `aws s3 sync` uploads when size differs or the local mtime is newer; `rsync -t` keeps
+  upstream mtimes, so same-size bumps are caught.
+- **Never `aws s3 sync --delete`.** R2 lists `install-tl` after `install-tl.zip.sha512.asc`
+  while the CLI walks staging in byte order, so the merge-join emits both an `upload:` and
+  a `delete:` for 15 keys and whichever lands last wins. Deletions come from `stale`, a
+  byte-sorted `comm` of the bucket listing against staging, fed to `aws s3 rm` (free on
+  R2). The 15 keys re-upload every run; that is harmless.
+- **Single-part uploads.** `aws.config` sets `multipart_threshold` above the largest file.
+  The CLI default is 8 MB, and multipart costs three or more Class A ops per file.
+- **`publish` uploads in a fixed order.** `archive/` first, then the full sync (which
+  carries the tlpdb), then deletions, so no client reads a tlpdb naming a container the
+  bucket lacks.
+- **The steps after `smoke` run in a fixed order too.** `report` before `ping` so a
+  healthchecks blip cannot lose the summary; `page` last so a broken landing page is one
+  email on a fresh mirror; `ping` after `smoke` so a broken domain never looks alive.
+- **`index.html` lives at the bucket root**, outside the mirror prefix, so `stale` never
+  sees it. It is uploaded with `Cache-Control: no-cache`. A Cloudflare Transform Rule
+  rewrites `/` to `/index.html`; without it the root is a 404 and the mirror still works.
+- **Do not trust the job log for counts.** GitHub drops lines when `publish` prints
+  thousands of `upload:` lines in seconds. `report` counts from `RUN` (`/tmp/tlnet-run`,
+  where `fetch` and `publish` `tee` under `pipefail`), not the job log. Judge completeness
+  by `smoke`, never by counting.
+- **A failed run is the only alert.** `guard` fails before `publish` if staging exceeds
+  10 GB; the mirror stays a day stale. healthchecks.io emails when a day passes without `ping`,
+  which also catches GitHub disabling the schedule after 60 commit-free days. Do not add
+  notification dependencies or upstream-freshness monitoring (tlnet goes quiet for weeks
+  before each release).
 - `.xz` is not in Cloudflare's default cache list, so there is no stale-edge problem. If a
-  cache-everything rule is ever added, add a purge step to `publish` before `smoke`.
-- Do not add upstream-freshness monitoring: tlnet goes quiet for weeks before each release.
-- Public repos have scheduled workflows disabled after 60 days without a commit; the
-  healthchecks ping catches it within a day. Dependabot's weekly Actions PRs are the only
-  routine commits.
-- GitHub's log capture drops lines when `publish` prints thousands of `upload:` lines in a
-  few seconds; the first full run's log shows ~7.9k of 17.4k uploads although the bucket was
-  complete. Judge completeness by `smoke` and spot checks, never by counting log lines.
-- Secrets are exactly four: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
-  (the workflow maps them to `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`;
-  `AWS_REGION` is the constant `auto`) and `HEALTHCHECK_URL`.
+  cache-everything rule is ever added, `publish` needs a purge step before `smoke`.
 
-## Deployment Status
+## Verification and security
 
-Live since 2026-08-26 (run 32933376123, 6m55s): fetch from dante 6.8 GB in ~5 min (22 to
-143 MB/s seen), `verify` with the container check ~16 s, `publish` ~80 s for the full first
-upload, `smoke` and `ping` passed, healthchecks reports up, and `tlmgr` installs from the
-domain. Scheduled runs push the daily delta.
+`verify` runs after `fetch` and before anything is uploaded. A tree that fails stays local;
+the previous good copy stays live.
 
-Run 32941682244 (2026-08-26, 1m47s) verified `page`, the `index.html` upload, the Transform
-Rule for `/`, `stale` against the real bucket (zero `delete:` lines, exactly the 15 prefix
-keys re-uploaded) and that `report` writes to the job page. Still open: a `report` with
-populated Mirror and Fetched rows has not been seen yet. The failure email
-fired once, for the 2026-08-26 `smoke` 404; the budget alert has not.
+1. `texlive.tlpdb.sha512` and the `install-tl*.sha512` files at the tree root (the only
+   files the tlpdb's checksums do not reach) are checked with `shasum`, then their `.asc`
+   signatures with `gpgv`. The keyring is read as a plain file from the mirror being
+   verified, so nothing is imported before it is authenticated.
+2. Because the keyring came from the same mirror as the signature, the only real check is
+   the pinned fingerprint `TL_KEY`: `VALIDSIG` must end in it. Rotate it only against
+   https://www.tug.org/texlive/verify.html. `GOODSIG` is also required because gpgv reports
+   an expired or revoked key as `VALIDSIG` with exit 0 (tlmgr accepts that; the mirror is
+   stricter). The signing subkey expires 2027-07-13; upstream extends it yearly.
+3. No `*.r[0-9]*.tar.xz` survives in `archive/`.
+4. Every container the tlpdb names exists and matches its `containerchecksum`,
+   `doccontainerchecksum` or `srccontainerchecksum` (source containers are
+   `<name>.source.tar.xz`). A tree caught between a tlpdb update and its containers fails.
 
-Dashboard setup that exists and would need redoing on a new account: R2 bucket `tlnet`;
-API token Object Read & Write scoped to it; custom domain `ctan.ijosh.com`; lifecycle rule
-aborting incomplete multipart uploads after 1 day; budget alert at $1; healthchecks.io check
-(period 1 day, grace 3 h, job starts 03:30 UTC) with its status badge in the README.
+After `publish`, `smoke` reads `texlive.tlpdb.sha512` back through the public domain and
+`cmp`s it with staging. `tlmgr` repeats the signature check on the client.
 
-Repository: topics set, private vulnerability reporting on (`SECURITY.md` links to it),
-`CONTRIBUTING.md` carries the ground rules for outside PRs, Dependabot groups Actions bumps
-weekly and opens security updates on their own. Actions must be SHA-pinned (repo setting),
-the allowlist is GitHub-owned plus `go-task/*`, and CodeQL default setup scans the workflows.
+## Repository guardrails
 
-## Verifying a Change
+- Actions are pinned to a full commit SHA with the version in a trailing comment (repo
+  setting rejects tags). The allowlist is GitHub-owned plus `go-task/*`.
+- Dependabot groups Actions bumps weekly; these are the only routine commits.
+- CodeQL default setup scans the workflows. Private vulnerability reporting is on and
+  `SECURITY.md` links to it.
+- PRs target `main` and are squash merged. `check.yml` must pass.
+- Commits: `<type>(<scope>): <summary>`, imperative, under 75 characters.
+
+## Verifying a change
 
 - `task --dry sync` renders the pipeline without touching the network.
 - `task guard STAGING=<dir> LIMIT_MB=<n>` exercises the size check against any directory.
 - `task smoke URL=file:///<dir> STAGING=<dir>` exercises the read-back check offline.
-- `task ping` is a no-op without `HEALTHCHECK_URL`; set it to any `file://` URL to exercise it.
-- `task stale RUN=<dir> STAGING=<dir>` diffs a canned `remote.txt` (one key per line, any
-  order) in `<dir>` against `<dir>`'s files and writes `stale.txt`; it must be empty when
-  every listed key exists locally, and it must fail on an empty directory.
+- `task ping` is a no-op without `HEALTHCHECK_URL`; set it to any `file://` URL.
+- `task stale RUN=<dir> STAGING=<dir>` diffs a canned `remote.txt` (one key per line) in
+  `<dir>` against `<dir>`'s files and writes `stale.txt`; it must be empty when every key
+  exists locally, and it must fail on an empty directory.
 - `task report RUN=<dir> STAGING=<dir>` renders the summary to stdout from a canned
   `fetch.txt` (rsync `--stats` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
-- `task page` fails at the upload without R2 credentials; open `site/index.html` directly,
-  or run its `sed` by hand to see the date filled in.
-- `task verify` needs a full `staging/` (the container check reads every archive); with only
-  `tlpkg/` and the root `install-tl*` files present the first command still exercises sha512,
-  gpgv, GOODSIG and the pin. A partial `archive/` fails the container check by design.
-- `publish` needs R2 credentials in `AWS_*` env vars (see the Taskfile header); there is no
-  mock, and the AWS CLI is not installed locally by default.
-- Is the mirror fresh? `curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512`
+- `task page` fails at the upload without credentials; run its `sed` by hand to see the
+  date filled in.
+- `task verify` needs a full `staging/`; with only `tlpkg/` and the root `install-tl*`
+  files the first step still exercises sha512, gpgv, GOODSIG and the pin. A partial
+  `archive/` fails the container check, as it should.
+- `publish` needs R2 credentials in `AWS_*` env vars; there is no mock, and the AWS CLI is
+  not installed locally by default.
+- Is the mirror fresh?
+  `curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512`
   and read `last-modified`.
