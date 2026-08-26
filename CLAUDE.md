@@ -36,7 +36,8 @@ in this file and in Taskfile comments, not there.
   (145 MB). The CLI default is 8 MB, and multipart costs three or more Class A ops per file.
 - `publish` order is load-bearing: `archive/` first, then the full `sync --delete`, so no
   client reads a `texlive.tlpdb` that names a container the bucket lacks. `index.html` goes
-  last, to the bucket root, outside the synced prefix so `--delete` never touches it.
+  last, to the bucket root, outside the synced prefix so `--delete` never touches it, with
+  `Cache-Control: no-cache` so the page is never served stale.
 - `sync` order is load-bearing around `guard`: the 10 GB check before `page`/`publish`
   (never bill), the 9 GB check after (alert without an outage). A failed run is the alert;
   do not add a notification dependency.
@@ -75,7 +76,8 @@ Live since 2026-08-26 (run 32933376123, 6m55s): fetch from dante 6.8 GB in ~5 mi
 upload, `smoke` and `ping` passed, healthchecks reports up, and `tlmgr` installs from the
 domain. Scheduled runs push the daily delta.
 
-Not yet verified on a run: `page` and the `index.html` upload (added after the first run),
+Not yet verified on a run: `page`, the `index.html` upload and its `no-cache` header at the
+edge (`curl -sI https://ctan.ijosh.com/index.html` should show it, not `max-age=86400`),
 and the Transform Rule for `/`. The failure email and the budget alert have not fired.
 
 Dashboard setup that exists and would need redoing on a new account: R2 bucket `tlnet`;
