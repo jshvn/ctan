@@ -49,17 +49,16 @@ in this file and in Taskfile comments, not there.
   the 15 keys are re-uploaded every run, which is harmless. Deletions are `stale`'s
   byte-sorted `comm` of the bucket listing against staging, run through `aws s3 rm`
   (DeleteObject is free on R2), so they cannot race an upload of the same key.
-- `sync` order is load-bearing around `guard`: the 10 GB check before `publish`
-  (never bill), the 9 GB check after (alert without an outage). A failed run is the alert;
-  do not add a notification dependency.
+- `guard` runs before `publish` so a tree over 10 GB is never billed; the run fails and
+  the mirror stays a day stale. It prints the size every run, so the trend is in the job
+  log. A failed run is the alert; do not add a notification dependency.
 - `fetch` and `publish` `tee` their output into `RUN` (`/tmp/tlnet-run`) for `report`, under
   `set: [pipefail]` so `tee` never masks a failed rsync or upload. `report` counts
   `upload:`/`delete:` lines from that file (`aws s3 rm` prints the same `delete:` form), not
   the job log, so the log-capture gap below does not affect it.
-- After `smoke` the order is `report -> ping -> page`, all before the soft `guard`. `report`
-  before `ping`: a healthchecks blip cannot lose the summary. `page` after `ping`: a broken
-  landing page is one email on a fresh mirror, never a stale one. `ping` before the soft
-  `guard`: a size warning is one email, not two. `ping` after `smoke`: a broken domain never
+- After `smoke` the order is `report -> ping -> page`. `report` before `ping`: a
+  healthchecks blip cannot lose the summary. `page` after `ping`: a broken landing page is
+  one email on a fresh mirror, never a stale one. `ping` after `smoke`: a broken domain never
   looks alive.
 - Objects live under `systems/texlive/tlnet/` in the bucket. Do not move them; every user's
   tlmgr config carries the path.

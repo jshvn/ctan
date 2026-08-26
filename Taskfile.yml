@@ -30,10 +30,10 @@ vars:
   RUN: /tmp/tlnet-run
   # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
-  # R2 free tier is 10 GB-month; both limits are decimal GB in MiB (the smaller unit,
-  # so a billing-side GB never comes out larger than what we measured).
-  HARD_MB: 9537   # 10 GB: never publish a tree that would bill
-  SOFT_MB: 8583   #  9 GB: publish, then fail the job so GitHub emails an alert
+  # R2 free tier is 10 GB-month, here as decimal GB in MiB (the smaller unit, so a
+  # billing-side GB never comes out larger than what we measured). guard prints the size
+  # every run, so the trend is in the log long before this trips.
+  LIMIT_MB: 9537   # 10 GB: never publish a tree that would bill
   # aws s3 sync uploads when size differs or the local mtime is newer than the
   # object's LastModified. rsync -t keeps upstream mtimes, and a revision bump is
   # always built after our previous upload, so same-size bumps are caught. Never
@@ -48,20 +48,18 @@ tasks:
     cmds: [{task: sync}]
 
   sync:
-    desc: fetch -> verify -> publish -> smoke -> report -> ping -> page; refuses to bill past 10 GB, alerts past 9 GB
+    desc: fetch -> verify -> guard -> publish -> smoke -> report -> ping -> page; refuses to bill past 10 GB
     cmds:
       - {task: fetch}
       - {task: verify}
-      - {task: guard, vars: {LIMIT_MB: '{{.HARD_MB}}'}}
+      - {task: guard}
       - {task: publish}
       - {task: smoke}
       # report, then ping, then page: a healthchecks blip cannot lose the summary, and a broken
-      # landing page is one email on a fresh mirror. All before the soft guard, so a run that
-      # fails only on the 9 GB alert still has a summary and sends one email, not two.
+      # landing page is one email on a fresh mirror.
       - {task: report}
       - {task: ping}
       - {task: page}
-      - {task: guard, vars: {LIMIT_MB: '{{.SOFT_MB}}'}}
 
   fetch:
     desc: Pull tlnet, dereferencing symlinks (tlmgr requests foo.tar.xz, never foo.r123.tar.xz)
@@ -97,10 +95,9 @@ tasks:
         texlive.tlpdb | shasum -a 512 -c --quiet
 
   guard:
-    desc: Fail when staging exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
-    requires: {vars: [LIMIT_MB]}
+    desc: Print the staging size and fail when it exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
     cmds:
-      - 'used=$(du -sm {{.STAGING}} | cut -f1); test "$used" -le {{.LIMIT_MB}} || { echo "staging is ${used} MiB, over the {{.LIMIT_MB}} MiB limit" >&2; exit 1; }'
+      - 'used=$(du -sm {{.STAGING}} | cut -f1); echo "staging is ${used} MiB of the {{.LIMIT_MB}} MiB limit"; test "$used" -le {{.LIMIT_MB}}'
 
   page:
     desc: Render README.md to site/index.html (host in the header, sync date in the footer) and upload it to the bucket root
@@ -169,7 +166,7 @@ tasks:
         |---|---|
         | Fetched from CTAN | $(rs 'Number of regular files transferred') files, $(mb "$(rs 'Total transferred file size')"); $(rs 'Number of deleted files') removed upstream |
         | Published to R2 | $(n upload) uploaded, $(n delete) deleted |
-        | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of {{.SOFT_MB}} MiB alert / {{.HARD_MB}} MiB hard limit |
+        | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of the {{.LIMIT_MB}} MiB limit |
         | Signature | texlive.tlpdb.sha512 signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
         | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
         | Landing page | [{{.SITE}}]({{.SITE}}/), re-rendered after this summary |
