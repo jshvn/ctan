@@ -8,8 +8,10 @@
 version: '3'
 
 vars:
-  # Any CTAN mirror with rsync; MIT is near the Azure US runners.
-  SOURCE: rsync://mirrors.mit.edu/CTAN/systems/texlive/tlnet/
+  # The CTAN master host. Secondary mirrors can lag it by a day; the master cannot.
+  SOURCE: rsync://rsync.dante.ctan.org/CTAN/systems/texlive/tlnet/
+  # A stalled sender fails in 5 minutes instead of holding the job to its 120-minute limit.
+  RSYNC_TIMEOUTS: --timeout=300 --contimeout=60
   STAGING: '{{.ROOT_DIR}}/staging'
   # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
@@ -50,12 +52,12 @@ tasks:
       # -L turns each unversioned symlink into a real file; the exclude drops the
       # versioned originals so nothing is stored twice.
       - >-
-        rsync -rLt --delete --delete-excluded --partial --info=stats1
+        rsync -rLt {{.RSYNC_TIMEOUTS}} --delete --delete-excluded --partial --info=stats1
         --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
         {{.SOURCE}} {{.STAGING}}/
 
   verify:
-    desc: Refuse to publish a tree caught mid-update, tampered upstream, or holding duplicate containers
+    desc: Refuse to publish a tree that is tampered, mid-update, missing or corrupt containers, or holding duplicates
     dir: '{{.STAGING}}/tlpkg'
     vars:
       # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
@@ -71,6 +73,15 @@ tasks:
       - gpg --status-fd 1 --verify texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
       # A versioned container next to its unversioned copy would double storage.
       - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
+      # Every container the tlpdb names must exist and match its sha512, so a tree caught
+      # between a tlpdb update and its containers is never published. Source containers
+      # are <name>.source.tar.xz although the tlpdb field is srccontainerchecksum.
+      - >-
+        awk '/^name /{n=$2}
+        /^containerchecksum /{print $2"  ../archive/"n".tar.xz"}
+        /^doccontainerchecksum /{print $2"  ../archive/"n".doc.tar.xz"}
+        /^srccontainerchecksum /{print $2"  ../archive/"n".source.tar.xz"}'
+        texlive.tlpdb | shasum -a 512 -c --quiet
 
   guard:
     desc: Fail when staging exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
@@ -98,5 +109,5 @@ tasks:
     desc: Dry-run against upstream and report file count and bytes (no download)
     cmds:
       - >-
-        rsync -rLtn --stats --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
+        rsync -rLtn {{.RSYNC_TIMEOUTS}} --stats --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
         {{.SOURCE}} /nonexistent | grep -E 'Number of files:|Total file size'

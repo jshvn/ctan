@@ -38,7 +38,8 @@ A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served a
   tlmgr config carries the path.
 - `verify` pins the TeX Live primary key fingerprint; the keyring comes from the mirror being
   verified, so the pin is the only real check. Rotate only against
-  https://www.tug.org/texlive/verify.html.
+  https://www.tug.org/texlive/verify.html. It then checks every container against the
+  tlpdb's `containerchecksum` fields; source containers are `<name>.source.tar.xz`.
 - `.xz` is not in Cloudflare's default cache list, so there is no stale-edge problem. If a
   cache-everything rule is ever added, add a purge step to `publish` before `smoke`.
 - Do not add upstream-freshness monitoring: tlnet goes quiet for weeks before each release.
@@ -69,6 +70,8 @@ Remaining setup, in order:
 - `task guard STAGING=<dir> LIMIT_MB=<n>` exercises the size check against any directory.
 - `task smoke URL=file:///<dir> STAGING=<dir>` exercises the read-back check offline.
 - `task ping` is a no-op without `HEALTHCHECK_URL`; set it to any `file://` URL to exercise it.
-- `task size` is the live upstream dry run (must stay under 10 GB).
-- `task verify` runs locally after `rsync`-ing only `tlpkg/` into `staging/tlpkg/`.
+- `task size` is the live upstream dry run (must stay under 10 GB). If it hangs, the master
+  is stalling on recursive listing; the rsync `--timeout` turns that into an error in CI.
+- `task verify` needs a full `staging/` (the container check reads every archive); with only
+  `tlpkg/` present the first three commands still exercise sha512, gpg and the pin.
 - `publish` needs R2 credentials in `RCLONE_CONFIG_R2_*` env vars; there is no mock.
