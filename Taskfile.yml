@@ -90,7 +90,7 @@ tasks:
       - 'used=$(du -sm {{.STAGING}} | cut -f1); test "$used" -le {{.LIMIT_MB}} || { echo "staging is ${used} MiB, over the {{.LIMIT_MB}} MiB limit" >&2; exit 1; }'
 
   page:
-    desc: Render README.md to site/index.html with the sync date and repo/site links in the footer
+    desc: Render README.md to site/index.html with repo/site links in the header and the sync date in the footer
     dir: '{{.ROOT_DIR}}'
     cmds:
       # GITHUB_TOKEN (automatic in Actions) lifts the per-IP rate limit shared by all runners.
