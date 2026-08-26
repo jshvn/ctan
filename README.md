@@ -66,7 +66,7 @@ curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512
 2. Create an R2 bucket, an API token with Object Read & Write scoped to it, and a custom
    domain pointing at the bucket. Set `BUCKET` and `URL` in `Taskfile.yml`. For a landing
    page at `/`, add a Cloudflare Transform Rule rewriting the path `/` to `/index.html`, and
-   put your own links in the footer of `site/template.html`.
+   put your own links in the header of `site/template.html`.
 3. Add the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
    and optionally `HEALTHCHECK_URL` (a healthchecks.io ping URL).
 4. Actions -> sync -> Run workflow. The first run uploads the whole mirror in about seven

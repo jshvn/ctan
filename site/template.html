@@ -23,17 +23,24 @@
   pre { background: var(--code); padding: 1em; border-radius: 6px; overflow-x: auto; }
   pre code { background: none; padding: 0; }
   img { max-width: 100%; }
+  header { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 2rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line); font-size: 85%; }
+  header a { color: var(--muted); }
+  header a:hover { color: var(--link); }
+  header nav a + a { margin-left: 1rem; }
   footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 85%; }
 </style>
 </head>
 <body>
 <main>
+<header>
+  <a href="/">ctan.ijosh.com</a>
+  <nav>
+    <a href="https://github.com/jshvn/ctan">GitHub</a>
+    <a href="https://ijosh.com">ijosh.com</a>
+  </nav>
+</header>
 <!--README-->
-<footer>
-  Last updated <!--UPDATED-->.
-  <a href="https://github.com/jshvn/ctan">Source on GitHub</a> &middot;
-  <a href="https://ijosh.com">ijosh.com</a>
-</footer>
+<footer>Last updated <!--UPDATED-->.</footer>
 </main>
 </body>
 </html>
