@@ -90,10 +90,12 @@ Live since 2026-08-26 (run 32933376123, 6m55s): fetch from dante 6.8 GB in ~5 mi
 upload, `smoke` and `ping` passed, healthchecks reports up, and `tlmgr` installs from the
 domain. Scheduled runs push the daily delta.
 
-Not yet verified on a run: `page`, the `index.html` upload and its `no-cache` header at the
-edge (`curl -sI https://ctan.ijosh.com/index.html` should show it, not `max-age=86400`),
-`report`, the Transform Rule for `/`, and `stale` against the real bucket (its first run
-should print zero `delete:` lines and re-upload only the 15 prefix keys). The failure email
+Run 32941682244 (2026-08-26, 1m47s) verified `page`, the `index.html` upload, the Transform
+Rule for `/`, `stale` against the real bucket (zero `delete:` lines, exactly the 15 prefix
+keys re-uploaded) and that `report` writes to the job page. Still open: the edge serves
+`index.html` with `max-age=86400` although `publish` sets `no-cache`, so a Cloudflare cache
+setting is overriding the object header (`curl -sI https://ctan.ijosh.com/index.html`); and
+a `report` with populated Mirror and Fetched rows has not been seen yet. The failure email
 fired once, for the 2026-08-26 `smoke` 404; the budget alert has not.
 
 Dashboard setup that exists and would need redoing on a new account: R2 bucket `tlnet`;
@@ -115,7 +117,7 @@ weekly.
   order) in `<dir>` against `<dir>`'s files and writes `stale.txt`; it must be empty when
   every listed key exists locally, and it must fail on an empty directory.
 - `task report RUN=<dir> STAGING=<dir>` renders the summary to stdout from a canned
-  `fetch.txt` (rsync `--info=stats1` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
+  `fetch.txt` (rsync `--stats` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
 - `task page` renders the README locally (needs `api.github.com`); open `site/index.html`.
 - `task size` is the live upstream dry run (must stay under 10 GB). If it hangs, the master
   is stalling on recursive listing; the rsync `--timeout` turns that into an error in CI.
