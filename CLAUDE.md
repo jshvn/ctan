@@ -14,7 +14,7 @@ A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served a
   Actions. If a change adds storage, recompute against the 6.8 GB baseline first.
 - No shell scripts. All logic lives in `Taskfile.yml`; workflows install tools and run one
   task, nothing more.
-- No dependencies beyond `rsync`, `rclone`, `gpg`, `shasum`, `curl`, `task`.
+- No dependencies beyond `rsync`, `aws` (AWS CLI v2), `gpg`, `shasum`, `curl`, `task`.
 - No AI attribution anywhere. No emojis.
 
 ## Gotchas
@@ -23,10 +23,12 @@ A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served a
   and symlinks to it. R2 has no symlinks, so `fetch` uses `rsync -L` and excludes
   `*.r[0-9]*.tar.xz`; `verify` fails if a versioned file survives. Storing both doubles
   storage and breaks the free tier.
-- Files are overwritten in place on revision bumps, so `rclone` must run with `--checksum`;
-  size-only comparison misses same-size updates.
-- Keep uploads single-part (`--s3-upload-cutoff` above the largest file). Multipart costs
-  extra Class A ops and the ETag stops being an MD5, which breaks `--checksum`.
+- Files are overwritten in place on revision bumps, often at the same size. `aws s3 sync`
+  uploads when size differs or the local mtime is newer than the object's LastModified;
+  `rsync -t` keeps upstream mtimes and a bump is always built after our previous upload, so
+  the daily cadence catches them. Never add `--size-only`.
+- Keep uploads single-part: `aws.config` sets `multipart_threshold` above the largest file
+  (145 MB). The CLI default is 8 MB, and multipart costs three or more Class A ops per file.
 - `publish` order is load-bearing: `archive/` first, then the full `sync`, so no client reads
   a `texlive.tlpdb` that names a container the bucket lacks.
 - `sync` order is load-bearing around `guard`: the 10 GB check before `publish` (never bill),
@@ -46,14 +48,15 @@ A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served a
 - Public repos have scheduled workflows disabled after 60 days without a commit; the
   healthchecks ping catches it within a day.
 - Secrets are exactly four: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
-  (rclone reads them as `RCLONE_CONFIG_R2_*`, no rclone.conf) and `HEALTHCHECK_URL`.
+  (the workflow maps them to `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`;
+  `AWS_REGION` is the constant `auto`) and `HEALTHCHECK_URL`.
 
 ## Deployment Status
 
-Not yet deployed. Verified: `task --dry sync`, `task size`, `task verify` against a real
-`tlpkg/`, and `guard`/`smoke`/`ping` offline in both directions. Not verified: a real
-`rclone` push, the workflow on a runner, `tlmgr` through the domain, the failure email, the
-healthchecks ping, the budget alert.
+Not yet deployed. Verified on a runner: fetch from dante (6.8 GB in ~50 s), `verify`
+including the container check (~17 s), `guard`. Verified offline: `smoke` and `ping` in both
+directions. Not verified: `publish` against R2, `tlmgr` through the domain, the failure
+email, the healthchecks ping, the budget alert.
 
 Remaining setup, in order:
 1. Cloudflare: R2 -> bucket `tlnet`; API token Object Read & Write scoped to it (account id
@@ -74,4 +77,5 @@ Remaining setup, in order:
   is stalling on recursive listing; the rsync `--timeout` turns that into an error in CI.
 - `task verify` needs a full `staging/` (the container check reads every archive); with only
   `tlpkg/` present the first three commands still exercise sha512, gpg and the pin.
-- `publish` needs R2 credentials in `RCLONE_CONFIG_R2_*` env vars; there is no mock.
+- `publish` needs R2 credentials in `AWS_*` env vars (see the Taskfile header); there is no
+  mock, and the AWS CLI is not installed locally by default.
