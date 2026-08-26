@@ -9,49 +9,55 @@ version: '3'
 vars:
   # The CTAN master host. Secondary mirrors can lag it by a day; the master cannot.
   SOURCE: rsync://rsync.dante.ctan.org/CTAN/systems/texlive/tlnet/
-  # A stalled sender fails in 5 minutes instead of holding the job to its 120-minute limit.
+  # A stalled sender fails in 5 minutes instead of holding the job to its 30-minute limit.
   RSYNC_TIMEOUTS: --timeout=300 --contimeout=60
   STAGING: '{{.ROOT_DIR}}/staging'
+  # The custom domain on the bucket. Every public URL derives from it; a fork changes this
+  # line and the text in site/index.html.
+  HOST: ctan.ijosh.com
   # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
+  # Bucket names are per account, so a fork keeps the name tlnet.
   PREFIX: systems/texlive/tlnet
   BUCKET: s3://tlnet/{{.PREFIX}}
-  URL: https://ctan.ijosh.com/systems/texlive/tlnet
-  # Landing page for https://ctan.ijosh.com/: README.md rendered by GitHub's Markdown API
-  # into site/template.html. A Cloudflare Transform Rule rewrites "/" to "/index.html".
-  PAGE: '{{.ROOT_DIR}}/site/index.html'
-  SITE: https://ctan.ijosh.com
+  URL: https://{{.HOST}}/{{.PREFIX}}
+  # Landing page for https://ctan.ijosh.com/: site/index.html uploaded to the bucket root.
+  # A Cloudflare Transform Rule rewrites "/" to "/index.html".
+  SITE: https://{{.HOST}}
   # Stage output that report reads back. Outside staging so it is never uploaded.
   RUN: /tmp/tlnet-run
   # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
-  # R2 free tier is 10 GB-month; both limits are decimal GB in MiB (the smaller unit,
-  # so a billing-side GB never comes out larger than what we measured).
-  HARD_MB: 9537   # 10 GB: never publish a tree that would bill
-  SOFT_MB: 8583   #  9 GB: publish, then fail the job so GitHub emails an alert
+  # R2 free tier is 10 GB-month, here as decimal GB in MiB (the smaller unit, so a
+  # billing-side GB never comes out larger than what we measured). guard prints the size
+  # every run, so the trend is in the log long before this trips.
+  LIMIT_MB: 9537   # 10 GB: never publish a tree that would bill
   # aws s3 sync uploads when size differs or the local mtime is newer than the
   # object's LastModified. rsync -t keeps upstream mtimes, and a revision bump is
   # always built after our previous upload, so same-size bumps are caught. Never
   # add --size-only. aws.config keeps every upload a single PutObject.
   AWS_FLAGS: --no-progress
 
+env:
+  AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
+
 tasks:
   default:
     cmds: [{task: sync}]
 
   sync:
-    desc: fetch -> verify -> publish -> smoke -> ping; refuses to bill past 10 GB, alerts past 9 GB
+    desc: fetch -> verify -> guard -> publish -> smoke -> report -> ping -> page; refuses to bill past 10 GB
     cmds:
       - {task: fetch}
       - {task: verify}
-      - {task: guard, vars: {LIMIT_MB: '{{.HARD_MB}}'}}
-      - {task: page}
+      - {task: guard}
       - {task: publish}
       - {task: smoke}
-      - {task: ping}
-      # Before the soft guard, so a run that fails only on the 9 GB alert still has a summary.
+      # report, then ping, then page: a healthchecks blip cannot lose the summary, and a broken
+      # landing page is one email on a fresh mirror.
       - {task: report}
-      - {task: guard, vars: {LIMIT_MB: '{{.SOFT_MB}}'}}
+      - {task: ping}
+      - {task: page}
 
   fetch:
     desc: Pull tlnet, dereferencing symlinks (tlmgr requests foo.tar.xz, never foo.r123.tar.xz)
@@ -68,15 +74,19 @@ tasks:
   verify:
     desc: Refuse to publish a tree that is tampered, mid-update, missing or corrupt containers, or holding duplicates
     dir: '{{.STAGING}}/tlpkg'
-    env:
-      # Short path on purpose: gpg-agent's unix socket has a ~100 char path limit.
-      GNUPGHOME: /tmp/tlnet-gnupg
     cmds:
-      - shasum -a 512 -c texlive.tlpdb.sha512
-      - mkdir -p -m 700 "$GNUPGHOME" && gpg -q --import gpg/pubring.gpg
-      # The keyring came from the same mirror as the signature, so pin the
-      # fingerprint: VALIDSIG's last field is the primary key that signed.
-      - gpg --status-fd 1 --verify texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
+      # The tlpdb and the installers at the tree root each carry a signed sha512; the
+      # installers are the only files the tlpdb's checksums do not cover. gpgv reads the
+      # keyring as a plain file, so nothing from the mirror is imported before it is
+      # authenticated. The keyring came from the same mirror as the signature, so pin the
+      # fingerprint: VALIDSIG's last field is the primary key that signed. GOODSIG as well,
+      # because gpgv reports an expired or revoked key as VALIDSIG with exit 0.
+      - >-
+        for f in texlive.tlpdb.sha512 ../install-tl*.sha512; do
+        (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
+        gpgv --status-fd 1 --keyring {{.STAGING}}/tlpkg/gpg/pubring.gpg "$f.asc" "$f"
+        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}')
+        || exit 1; done
       # A versioned container next to its unversioned copy would double storage.
       - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
       # Every container the tlpdb names must exist and match its sha512, so a tree caught
@@ -90,30 +100,23 @@ tasks:
         texlive.tlpdb | shasum -a 512 -c --quiet
 
   guard:
-    desc: Fail when staging exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
-    requires: {vars: [LIMIT_MB]}
+    desc: Print the staging size and fail when it exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
     cmds:
-      - 'used=$(du -sm {{.STAGING}} | cut -f1); test "$used" -le {{.LIMIT_MB}} || { echo "staging is ${used} MiB, over the {{.LIMIT_MB}} MiB limit" >&2; exit 1; }'
+      - 'used=$(du -sm {{.STAGING}} | cut -f1); echo "staging is ${used} MiB of the {{.LIMIT_MB}} MiB limit"; test "$used" -le {{.LIMIT_MB}}'
 
   page:
-    desc: Render README.md to site/index.html with repo/site links in the header and the sync date in the footer
+    desc: Upload site/index.html with the sync date filled in to the bucket root
     dir: '{{.ROOT_DIR}}'
+    set: [pipefail]   # a failed sed must never upload an empty page
     cmds:
-      # GITHUB_TOKEN (automatic in Actions) lifts the per-IP rate limit shared by all runners.
-      # When it is unset the header has an empty value and curl does not send it.
-      - >-
-        curl -fsS -m 30 -X POST --data-binary @README.md -H 'Content-Type: text/plain'
-        -H "Authorization: ${GITHUB_TOKEN:+Bearer $GITHUB_TOKEN}"
-        -o site/body.html https://api.github.com/markdown/raw
-      - sed -e "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" -e '/<!--README-->/r site/body.html' -e '/<!--README-->/d' site/template.html > {{.PAGE}}
-      - rm site/body.html
-      - grep -q 'class="markdown-heading"' {{.PAGE}}
+      # Streamed, so the checked-in file is the only copy. Bucket root, outside the mirror
+      # prefix, so the stale listing never sees it. no-cache so the edge and browsers refetch
+      # the page every visit; the mirror files are not edge-cached at all.
+      - sed "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" site/index.html | aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache - s3://tlnet/index.html
 
   publish:
     desc: Containers first, then tlpdb, then deletions, so no client sees a tlpdb that names a missing file
     set: [pipefail]   # tee must never mask a failed upload
-    env:
-      AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
     cmds:
       - mkdir -p {{.RUN}}
       - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive | tee {{.RUN}}/publish.txt
@@ -127,9 +130,6 @@ tasks:
       # ponytail: one DeleteObject per key (free on R2, ~1 s each). Batch with s3api
       # delete-objects if a release rollover ever removes thousands of files at once.
       - xargs -r -I{} aws s3 rm s3://tlnet/{} < {{.RUN}}/stale.txt | tee -a {{.RUN}}/publish.txt
-      # Bucket root, outside the mirror prefix, so the listing above never sees it. no-cache so
-      # the edge and browsers refetch the page every visit; the mirror files keep their own TTL.
-      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
 
   stale:
     desc: Keys in RUN/remote.txt (the bucket listing) that staging no longer has, written to RUN/stale.txt
@@ -164,10 +164,10 @@ tasks:
         |---|---|
         | Fetched from CTAN | $(rs 'Number of regular files transferred') files, $(mb "$(rs 'Total transferred file size')"); $(rs 'Number of deleted files') removed upstream |
         | Published to R2 | $(n upload) uploaded, $(n delete) deleted |
-        | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of {{.SOFT_MB}} MiB alert / {{.HARD_MB}} MiB hard limit |
-        | Signature | texlive.tlpdb.sha512 signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
+        | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of the {{.LIMIT_MB}} MiB limit |
+        | Signature | texlive.tlpdb.sha512 and the installers signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
         | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
-        | Landing page | [{{.SITE}}]({{.SITE}}/) updated |
+        | Landing page | [{{.SITE}}]({{.SITE}}/), re-uploaded after this summary |
 
         <details><summary>rsync stats</summary>
 
@@ -176,10 +176,3 @@ tasks:
         \`\`\`
         </details>
         EOF
-
-  size:
-    desc: Dry-run against upstream and report file count and bytes (no download)
-    cmds:
-      - >-
-        rsync -rLtn {{.RSYNC_TIMEOUTS}} --stats --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
-        {{.SOURCE}} /nonexistent | grep -E 'Number of files:|Total file size'

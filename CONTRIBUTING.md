@@ -20,8 +20,7 @@ task guard STAGING=<dir> LIMIT_MB=<n>             # size check against any direc
 task smoke URL=file:///<dir> STAGING=<dir>        # read-back check, offline
 ```
 
-`task size` runs a live dry run against the CTAN master and must stay under 10 GB. The
-`check` workflow runs `task --dry sync` on every pull request.
+The `check` workflow runs `task --dry sync` on every pull request.
 
 `publish` needs real R2 credentials and has no mock; test it on your own fork (see
 "Want your own?" in the README).
