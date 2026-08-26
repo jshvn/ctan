@@ -53,19 +53,19 @@ A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served a
 
 ## Deployment Status
 
-Not yet deployed. Verified on a runner: fetch from dante (6.8 GB in ~50 s), `verify`
-including the container check (~17 s), `guard`. Verified offline: `smoke` and `ping` in both
-directions. Not verified: `publish` against R2, `tlmgr` through the domain, the failure
-email, the healthchecks ping, the budget alert.
+Live since 2026-08-26 (run 32933376123): fetch from dante 6.8 GB in ~5 min (varies, 22 to
+143 MB/s seen), `verify` with the container check ~17 s, `publish` ~80 s for the full first
+upload, `smoke` and `ping` passed, and `tlmgr` installs from the domain. Whole job ~7 min.
 
-Remaining setup, in order:
-1. Cloudflare: R2 -> bucket `tlnet`; API token Object Read & Write scoped to it (account id
-   is in the S3 endpoint); custom domain `ctan.ijosh.com`; lifecycle rule to abort incomplete
-   multipart uploads after 1 day; Billing -> Billable Usage -> budget alert at $1.
-2. healthchecks.io check: period 1 day, grace 3 hours (job starts 03:30 UTC, ~10 min).
-3. Repository secrets, then Actions -> sync -> Run workflow (~6.8 GB, ~17k Class A ops).
-4. `tlmgr option repository https://ctan.ijosh.com/systems/texlive/tlnet/` and
-   `tlmgr update --self --all` from a real machine.
+Known: GitHub's log capture drops lines when `publish` prints thousands of `upload:` lines
+in a few seconds; the first successful run's log shows ~7.9k of 17.4k uploads. The bucket was
+complete (sampled via HEAD on the public URL). Judge completeness by `smoke` and spot
+checks, not by counting log lines.
+
+Dashboard setup that exists and would need redoing on a new account: R2 bucket `tlnet`;
+API token Object Read & Write scoped to it; custom domain `ctan.ijosh.com`; lifecycle rule
+aborting incomplete multipart uploads after 1 day; budget alert at $1; healthchecks.io check
+(period 1 day, grace 3 h, job starts 03:30 UTC).
 
 ## Verifying a Change
 
