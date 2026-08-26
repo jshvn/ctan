@@ -17,7 +17,6 @@ jobs:
       AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
       AWS_REGION: auto
       HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # read-only; only used to render README.md via the Markdown API
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0

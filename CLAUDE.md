@@ -3,7 +3,7 @@
 ## What This Is
 
 A daily-synced mirror of `CTAN/systems/texlive/tlnet` on Cloudflare R2, served at
-`https://ctan.ijosh.com/systems/texlive/tlnet/`, with `README.md` rendered as the landing page
+`https://ctan.ijosh.com/systems/texlive/tlnet/`, with `site/index.html` as the landing page
 at `https://ctan.ijosh.com/`. All logic is in `Taskfile.yml`; `.github/workflows/sync.yml`
 installs tools and runs `task sync` on a cron; `check.yml` runs `task --dry sync` on pull
 requests. tlnet is ~17,400 files / 6.8 GB; the largest file is ~145 MB.
@@ -19,8 +19,7 @@ in this file and in Taskfile comments, not there.
   task, nothing more.
 - No dependencies beyond `rsync`, `aws` (AWS CLI v2), `gpg` (`verify` calls its `gpgv`),
   `shasum`, `curl`, `task`.
-  The only network endpoints are the CTAN master, R2, the public domain, healthchecks.io
-  and `api.github.com/markdown` (used by `page`).
+  The only network endpoints are the CTAN master, R2, the public domain and healthchecks.io.
 - No AI attribution anywhere. No emojis.
 
 ## Gotchas
@@ -66,12 +65,11 @@ in this file and in Taskfile comments, not there.
   verified, so the pin is the only real check. Rotate only against
   https://www.tug.org/texlive/verify.html. It then checks every container against the
   tlpdb's `containerchecksum` fields; source containers are `<name>.source.tar.xz`.
-- `page` POSTs `README.md` to GitHub's Markdown API, splices the result into
-  `site/template.html` (substituting `HOST` for the title and header link) and uploads it;
-  `site/index.html` is build output and gitignored. In Actions the automatic `GITHUB_TOKEN`
-  lifts the per-IP rate limit; locally the anonymous limit (60/hour) is plenty. The
-  `grep markdown-heading` line is the render check. A Cloudflare Transform Rule rewrites `/`
-  to `/index.html`; without it the root is a 404 while the mirror path still works.
+- `page` streams `site/index.html` through `sed` (the `<!--UPDATED-->` placeholder becomes
+  the sync time) into `aws s3 cp -`; the checked-in file is the only copy. The page repeats
+  the README's prose by design, so a README edit is a page edit too. A Cloudflare Transform
+  Rule rewrites `/` to `/index.html`; without it the root is a 404 while the mirror path
+  still works.
 - `.xz` is not in Cloudflare's default cache list, so there is no stale-edge problem. If a
   cache-everything rule is ever added, add a purge step to `publish` before `smoke`.
 - Do not add upstream-freshness monitoring: tlnet goes quiet for weeks before each release.
@@ -83,8 +81,7 @@ in this file and in Taskfile comments, not there.
   complete. Judge completeness by `smoke` and spot checks, never by counting log lines.
 - Secrets are exactly four: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
   (the workflow maps them to `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`;
-  `AWS_REGION` is the constant `auto`) and `HEALTHCHECK_URL`. `GITHUB_TOKEN` is the automatic
-  read-only token, passed through as an env var, not a secret to set.
+  `AWS_REGION` is the constant `auto`) and `HEALTHCHECK_URL`.
 
 ## Deployment Status
 
@@ -119,8 +116,8 @@ weekly.
   every listed key exists locally, and it must fail on an empty directory.
 - `task report RUN=<dir> STAGING=<dir>` renders the summary to stdout from a canned
   `fetch.txt` (rsync `--stats` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
-- `task page` renders the README locally (needs `api.github.com`), then fails at the upload
-  without R2 credentials; `site/index.html` is already on disk by then, so open it.
+- `task page` fails at the upload without R2 credentials; open `site/index.html` directly,
+  or run its `sed` by hand to see the date filled in.
 - `task verify` needs a full `staging/` (the container check reads every archive); with only
   `tlpkg/` present the first two commands still exercise sha512, gpgv and the pin. A partial
   `archive/` fails the container check by design.

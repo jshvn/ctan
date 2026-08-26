@@ -12,8 +12,8 @@ vars:
   # A stalled sender fails in 5 minutes instead of holding the job to its 30-minute limit.
   RSYNC_TIMEOUTS: --timeout=300 --contimeout=60
   STAGING: '{{.ROOT_DIR}}/staging'
-  # The custom domain on the bucket. Every public URL and the page header derive from it, so
-  # a fork changes only this line.
+  # The custom domain on the bucket. Every public URL derives from it; a fork changes this
+  # line and the text in site/index.html.
   HOST: ctan.ijosh.com
   # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
@@ -21,10 +21,8 @@ vars:
   PREFIX: systems/texlive/tlnet
   BUCKET: s3://tlnet/{{.PREFIX}}
   URL: https://{{.HOST}}/{{.PREFIX}}
-  # Landing page for https://ctan.ijosh.com/: README.md rendered by GitHub's Markdown API
-  # into site/template.html, then uploaded to the bucket root. A Cloudflare Transform Rule
-  # rewrites "/" to "/index.html".
-  PAGE: '{{.ROOT_DIR}}/site/index.html'
+  # Landing page for https://ctan.ijosh.com/: site/index.html uploaded to the bucket root.
+  # A Cloudflare Transform Rule rewrites "/" to "/index.html".
   SITE: https://{{.HOST}}
   # Stage output that report reads back. Outside staging so it is never uploaded.
   RUN: /tmp/tlnet-run
@@ -100,21 +98,14 @@ tasks:
       - 'used=$(du -sm {{.STAGING}} | cut -f1); echo "staging is ${used} MiB of the {{.LIMIT_MB}} MiB limit"; test "$used" -le {{.LIMIT_MB}}'
 
   page:
-    desc: Render README.md to site/index.html (host in the header, sync date in the footer) and upload it to the bucket root
+    desc: Upload site/index.html with the sync date filled in to the bucket root
     dir: '{{.ROOT_DIR}}'
+    set: [pipefail]   # a failed sed must never upload an empty page
     cmds:
-      # GITHUB_TOKEN (automatic in Actions) lifts the per-IP rate limit shared by all runners.
-      # When it is unset the header has an empty value and curl does not send it.
-      - >-
-        curl -fsS -m 30 -X POST --data-binary @README.md -H 'Content-Type: text/plain'
-        -H "Authorization: ${GITHUB_TOKEN:+Bearer $GITHUB_TOKEN}"
-        -o site/body.html https://api.github.com/markdown/raw
-      - sed -e "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" -e 's|<!--HOST-->|{{.HOST}}|g' -e '/<!--README-->/r site/body.html' -e '/<!--README-->/d' site/template.html > {{.PAGE}}
-      - rm site/body.html
-      - grep -q 'class="markdown-heading"' {{.PAGE}}
-      # Bucket root, outside the mirror prefix, so the stale listing never sees it. no-cache so
-      # the edge and browsers refetch the page every visit; the mirror files are not edge-cached at all.
-      - aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache {{.PAGE}} s3://tlnet/index.html
+      # Streamed, so the checked-in file is the only copy. Bucket root, outside the mirror
+      # prefix, so the stale listing never sees it. no-cache so the edge and browsers refetch
+      # the page every visit; the mirror files are not edge-cached at all.
+      - sed "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" site/index.html | aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache - s3://tlnet/index.html
 
   publish:
     desc: Containers first, then tlpdb, then deletions, so no client sees a tlpdb that names a missing file
@@ -169,7 +160,7 @@ tasks:
         | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of the {{.LIMIT_MB}} MiB limit |
         | Signature | texlive.tlpdb.sha512 signed by TeX Live key {{.TL_KEY}}; every container matches its tlpdb checksum |
         | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
-        | Landing page | [{{.SITE}}]({{.SITE}}/), re-rendered after this summary |
+        | Landing page | [{{.SITE}}]({{.SITE}}/), re-uploaded after this summary |
 
         <details><summary>rsync stats</summary>
 

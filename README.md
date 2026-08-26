@@ -50,8 +50,7 @@ A GitHub Actions cron runs `task sync` once a day. Every step is in
 4. **smoke**: read `texlive.tlpdb.sha512` back through the public URL and compare.
 5. **report**: write the numbers above to the run's summary on GitHub.
 6. **ping**: tell healthchecks.io the run completed.
-7. **page**: render this README into the landing page at
-   [ctan.ijosh.com](https://ctan.ijosh.com/).
+7. **page**: upload the landing page at [ctan.ijosh.com](https://ctan.ijosh.com/).
 
 A failed run emails me. A run that never happens trips healthchecks.io.
 
@@ -67,7 +66,7 @@ curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512
 2. Create an R2 bucket named `tlnet`, an API token with Object Read & Write scoped to it,
    and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`.
    For a landing page at `/`, add a Cloudflare Transform Rule rewriting the path `/` to
-   `/index.html`, and put your own links in the header of `site/template.html`.
+   `/index.html`, and put your own links and text in `site/index.html`.
 3. Add the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
    and optionally `HEALTHCHECK_URL` (a healthchecks.io ping URL).
 4. Actions -> sync -> Run workflow. The first run uploads the whole mirror in about seven
