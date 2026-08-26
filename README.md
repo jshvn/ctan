@@ -5,6 +5,10 @@
 A nearly no-code mirror of the TeX Live network repository (`CTAN/systems/texlive/tlnet`),
 served from Cloudflare R2 and refreshed daily. Every platform, docs and sources included.
 
+This is not a full CTAN mirror. It carries only `systems/texlive/tlnet`, the directory that
+`tlmgr` installs and updates from, so it is useful to TeX Live and TinyTeX users and to
+nobody else. Packages on CTAN outside tlnet are not here.
+
 ### Why
 
 I kept running into build failures on the way to CTAN: mirrors with broken TLS, mirrors that 
@@ -26,7 +30,7 @@ mirror.
 
 A GitHub Actions cron runs `task sync` once a day: rsync tlnet from a CTAN mirror, verify
 the GPG signature on `texlive.tlpdb`, and `aws s3 sync` the tree to R2. Every step is in
-`Taskfile.yml`.
+[`Taskfile.yml`](Taskfile.yml).
 
 ## Want your own?
 
