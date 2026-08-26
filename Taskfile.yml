@@ -1,10 +1,9 @@
 # Mirror the TeX Live network repository (CTAN systems/texlive/tlnet) into a
 # Cloudflare R2 bucket. Runs the same way locally and inside GitHub Actions.
 #
-# Remote "r2" is defined entirely by environment variables (no rclone.conf):
-#   RCLONE_CONFIG_R2_TYPE=s3  RCLONE_CONFIG_R2_PROVIDER=Cloudflare
-#   RCLONE_CONFIG_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
-#   RCLONE_CONFIG_R2_ACCESS_KEY_ID / RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
+# R2 is reached through the AWS CLI, configured entirely by environment variables:
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   (R2 API token, Object Read & Write)
+#   AWS_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com   AWS_REGION=auto
 version: '3'
 
 vars:
@@ -15,20 +14,17 @@ vars:
   STAGING: '{{.ROOT_DIR}}/staging'
   # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
   # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
-  BUCKET: r2:tlnet/systems/texlive/tlnet
+  BUCKET: s3://tlnet/systems/texlive/tlnet
   URL: https://ctan.ijosh.com/systems/texlive/tlnet
   # R2 free tier is 10 GB-month; both limits are decimal GB in MiB (the smaller unit,
   # so a billing-side GB never comes out larger than what we measured).
   HARD_MB: 9537   # 10 GB: never publish a tree that would bill
   SOFT_MB: 8583   #  9 GB: publish, then fail the job so GitHub emails an alert
-  # --checksum: local MD5 vs R2 ETag, so an in-place revision bump of foo.tar.xz
-  #   (same name, maybe same size) is always detected.
-  # --s3-upload-cutoff 200M: largest tlnet file is ~145 MB, so every upload is a
-  #   single PutObject (one Class A op) instead of a multipart trio.
-  # --s3-no-check-bucket: object-scoped R2 tokens cannot HeadBucket.
-  RCLONE_FLAGS: >-
-    --checksum --transfers 32 --checkers 32 --s3-upload-cutoff 200M
-    --s3-no-check-bucket --fast-list --stats-one-line -v
+  # aws s3 sync uploads when size differs or the local mtime is newer than the
+  # object's LastModified. rsync -t keeps upstream mtimes, and a revision bump is
+  # always built after our previous upload, so same-size bumps are caught. Never
+  # add --size-only. aws.config keeps every upload a single PutObject.
+  AWS_FLAGS: --no-progress
 
 tasks:
   default:
@@ -91,9 +87,11 @@ tasks:
 
   publish:
     desc: Containers first, then tlpdb + deletions, so no client sees a tlpdb that names a missing file
+    env:
+      AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
     cmds:
-      - rclone copy {{.RCLONE_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
-      - rclone sync {{.RCLONE_FLAGS}} {{.STAGING}} {{.BUCKET}}
+      - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
+      - aws s3 sync {{.AWS_FLAGS}} --delete {{.STAGING}} {{.BUCKET}}
 
   smoke:
     desc: Read texlive.tlpdb.sha512 back through the public URL; proves the upload landed and the domain serves it

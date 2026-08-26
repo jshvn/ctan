@@ -25,7 +25,7 @@ mirror.
 ## How it works
 
 A GitHub Actions cron runs `task sync` once a day: rsync tlnet from a CTAN mirror, verify
-the GPG signature on `texlive.tlpdb`, and `rclone sync` the tree to R2. Every step is in
+the GPG signature on `texlive.tlpdb`, and `aws s3 sync` the tree to R2. Every step is in
 `Taskfile.yml`.
 
 ## Want your own?
