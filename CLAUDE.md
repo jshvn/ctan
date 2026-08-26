@@ -108,7 +108,8 @@ aborting incomplete multipart uploads after 1 day; budget alert at $1; healthche
 
 Repository: topics set, private vulnerability reporting on (`SECURITY.md` links to it),
 `CONTRIBUTING.md` carries the ground rules for outside PRs, Dependabot groups Actions bumps
-weekly.
+weekly and opens security updates on their own. Actions must be SHA-pinned (repo setting),
+the allowlist is GitHub-owned plus `go-task/*`, and CodeQL default setup scans the workflows.
 
 ## Verifying a Change
 
