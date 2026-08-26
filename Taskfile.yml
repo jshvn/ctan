@@ -73,6 +73,7 @@ tasks:
       - gpg --status-fd 1 --verify texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
       # A versioned container next to its unversioned copy would double storage.
       - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
+      # Every container the tlpdb names must exist and match its sha512, so a tree caught
       # between a tlpdb update and its containers is never published. Source containers
       # are <name>.source.tar.xz although the tlpdb field is srccontainerchecksum.
       - >-
@@ -81,7 +82,6 @@ tasks:
         /^doccontainerchecksum /{print $2"  ../archive/"n".doc.tar.xz"}
         /^srccontainerchecksum /{print $2"  ../archive/"n".source.tar.xz"}'
         texlive.tlpdb | shasum -a 512 -c --quiet
-| head -1)"
 
   guard:
     desc: Fail when staging exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
