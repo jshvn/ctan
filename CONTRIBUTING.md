@@ -11,6 +11,8 @@ Pull requests are welcome, especially ones that make the pipeline smaller.
   change adds storage or upload operations, say by how much in the PR.
 - Objects stay under `systems/texlive/tlnet/`; every user's `tlmgr` config carries that
   path.
+- Actions are pinned to a full commit SHA with the version in a trailing comment;
+  Dependabot keeps them current. GitHub rejects a workflow that references a tag.
 
 ## Checking a change
 
