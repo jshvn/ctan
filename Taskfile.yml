@@ -11,7 +11,14 @@ vars:
   # Any CTAN mirror with rsync; MIT is near the Azure US runners.
   SOURCE: rsync://mirrors.mit.edu/CTAN/systems/texlive/tlnet/
   STAGING: '{{.ROOT_DIR}}/staging'
-  BUCKET: r2:tlnet
+  # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
+  # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
+  BUCKET: r2:tlnet/systems/texlive/tlnet
+  URL: https://ctan.ijosh.com/systems/texlive/tlnet
+  # R2 free tier is 10 GB-month; both limits are decimal GB in MiB (the smaller unit,
+  # so a billing-side GB never comes out larger than what we measured).
+  HARD_MB: 9537   # 10 GB: never publish a tree that would bill
+  SOFT_MB: 8583   #  9 GB: publish, then fail the job so GitHub emails an alert
   # --checksum: local MD5 vs R2 ETag, so an in-place revision bump of foo.tar.xz
   #   (same name, maybe same size) is always detected.
   # --s3-upload-cutoff 200M: largest tlnet file is ~145 MB, so every upload is a
@@ -26,8 +33,15 @@ tasks:
     cmds: [{task: sync}]
 
   sync:
-    desc: fetch -> verify -> publish
-    cmds: [{task: fetch}, {task: verify}, {task: publish}]
+    desc: fetch -> verify -> publish -> smoke -> ping; refuses to bill past 10 GB, alerts past 9 GB
+    cmds:
+      - {task: fetch}
+      - {task: verify}
+      - {task: guard, vars: {LIMIT_MB: '{{.HARD_MB}}'}}
+      - {task: publish}
+      - {task: smoke}
+      - {task: ping}
+      - {task: guard, vars: {LIMIT_MB: '{{.SOFT_MB}}'}}
 
   fetch:
     desc: Pull tlnet, dereferencing symlinks (tlmgr requests foo.tar.xz, never foo.r123.tar.xz)
@@ -41,7 +55,7 @@ tasks:
         {{.SOURCE}} {{.STAGING}}/
 
   verify:
-    desc: Refuse to publish a tree caught mid-update or tampered upstream
+    desc: Refuse to publish a tree caught mid-update, tampered upstream, or holding duplicate containers
     dir: '{{.STAGING}}/tlpkg'
     vars:
       # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
@@ -55,12 +69,30 @@ tasks:
       # The keyring came from the same mirror as the signature, so pin the
       # fingerprint: VALIDSIG's last field is the primary key that signed.
       - gpg --status-fd 1 --verify texlive.tlpdb.sha512.asc texlive.tlpdb.sha512 | grep -q 'VALIDSIG .* {{.TL_KEY}}$'
+      # A versioned container next to its unversioned copy would double storage.
+      - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
+
+  guard:
+    desc: Fail when staging exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
+    requires: {vars: [LIMIT_MB]}
+    cmds:
+      - 'used=$(du -sm {{.STAGING}} | cut -f1); test "$used" -le {{.LIMIT_MB}} || { echo "staging is ${used} MiB, over the {{.LIMIT_MB}} MiB limit" >&2; exit 1; }'
 
   publish:
     desc: Containers first, then tlpdb + deletions, so no client sees a tlpdb that names a missing file
     cmds:
       - rclone copy {{.RCLONE_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive
       - rclone sync {{.RCLONE_FLAGS}} {{.STAGING}} {{.BUCKET}}
+
+  smoke:
+    desc: Read texlive.tlpdb.sha512 back through the public URL; proves the upload landed and the domain serves it
+    cmds:
+      - curl -fsS -m 30 {{.URL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.STAGING}}/tlpkg/texlive.tlpdb.sha512
+
+  ping:
+    desc: Dead man's switch; healthchecks.io emails when a day passes without this (skipped if HEALTHCHECK_URL is unset)
+    cmds:
+      - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
 
   size:
     desc: Dry-run against upstream and report file count and bytes (no download)

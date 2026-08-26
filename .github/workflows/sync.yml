@@ -16,8 +16,9 @@ jobs:
       RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
       RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: go-task/setup-task@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
       - run: sudo apt-get install -y --no-install-recommends rclone   # noble ships >= 1.59, which R2 needs
       - run: task sync
