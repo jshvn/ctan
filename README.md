@@ -2,7 +2,7 @@
 
 [![sync](https://github.com/jshvn/ctan/actions/workflows/sync.yml/badge.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 [![license](https://img.shields.io/github/license/jshvn/ctan)](https://github.com/jshvn/ctan/blob/main/LICENSE)
-[![mirror](https://healthchecks.io/badge/8955b5d3-ba3b-4e8a-ac39-8501494333f5/otTXcui6-2.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
+[![mirror](https://healthchecks.io/b/2/f4ad55cc-4b2d-4cce-b133-aba5381d9e71.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 
 An hourly mirror of all of [CTAN](https://ctan.org) on Cloudflare R2, served at
 `https://ctan.ijosh.com/` with every CTAN path at the root. About 496,000 files and 133 GB.
