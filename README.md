@@ -9,6 +9,8 @@ An hourly mirror of all of [CTAN](https://ctan.org) on Cloudflare R2, served at
 
 ## How to use
 
+Your request served to `https://mirrors.ctan.org/` might be redirected to this mirror automatically (once I apply for official mirror status). Until then, the full mirror of CTAN is served from `https://ctan.ijosh.com/`.
+
 TeX Live and TinyTeX both use `tlmgr`:
 
 ```sh
@@ -23,12 +25,6 @@ install-tl -repository https://ctan.ijosh.com/systems/texlive/tlnet/
 ```
 
 To go back to CTAN's mirror rotation: `tlmgr option repository ctan`.
-
-Any other CTAN path works the same way, for example
-`https://ctan.ijosh.com/macros/latex/contrib/hyperref.zip`. Directory URLs redirect to the
-matching page on ctan.org, because R2 serves files, not listings. The root,
-`https://ctan.ijosh.com/`, serves CTAN's own `index.html`, as every mirror does; this README
-is the mirror's documentation.
 
 ## How it works
 
