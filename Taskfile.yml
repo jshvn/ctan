@@ -35,8 +35,8 @@ vars:
       { out = ""; for (j = 1; j <= length($0); j++) { c = substr($0, j, 1)
           out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) }
         print $0 "\t" out }'
-  # Local runs happen inside tools/docker/ctan: Apple `container` when installed and
-  # running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
+  # Local runs happen inside the image built from docker/: Apple `container` when installed
+  # and running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
   # image ships the runner's tool versions so the two agree.
   IMAGE: ctan-sync
   ENGINE:
@@ -101,7 +101,7 @@ tasks:
           "  task run -- task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree" \
           "                    ${d}sizes match, no versioned containers, the tlpdb names nothing missing${r}" \
           "" \
-          "${c}toolbox -- {{.ENGINE}}, built from tools/docker/ctan${r}" \
+          "${c}toolbox -- {{.ENGINE}}, built from docker/${r}" \
           "  task image        Build it (a no-op while it exists; remove it after a Dockerfile edit)" \
           "  task run -- <cmd> Run anything inside it, with the repo at /work" \
           "" \
@@ -561,7 +561,7 @@ tasks:
     run: once
     status: ['{{.ENGINE}} image inspect {{.IMAGE}} >/dev/null 2>&1']
     cmds:
-      - '{{.ENGINE}} build -t {{.IMAGE}} tools/docker/ctan'
+      - '{{.ENGINE}} build -t {{.IMAGE}} docker/'
 
   run:
     desc: 'Run a command inside the image with the repo at /work: task run -- task --dry sync'

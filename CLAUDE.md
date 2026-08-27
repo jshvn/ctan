@@ -16,7 +16,7 @@ Everything is in a few files:
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
 - `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/index.html`, directory
   URLs -> ctan.org). `rules` applies one only when its stamped sha256 differs.
-- `tools/docker/ctan/Dockerfile`: the toolbox image with the runner's tool versions.
+- `docker/Dockerfile`: the toolbox image with the runner's tool versions.
   `task run -- task <args>` runs any task inside it with the repo at `/work`.
 - `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
   `seed`, `reconcile`, `max_batches`, `cache`. `check.yml`: `task --dry --force sync` and
