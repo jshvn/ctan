@@ -8,7 +8,7 @@ version: '3'
 vars:
   SOURCE: rsync://rsync.dante.ctan.org/CTAN/   # the master; the register page asks for it
   HOST: ctan.ijosh.com                          # a fork changes this line
-  BUCKET: tlnet                                 # bucket name; objects sit at its root under CTAN's own paths
+  BUCKET: ctan                                  # bucket name; objects sit at its root under CTAN's own paths
   S3: s3://{{.BUCKET}}
   URL: https://{{.HOST}}
   STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream

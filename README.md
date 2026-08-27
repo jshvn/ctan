@@ -56,7 +56,7 @@ behind the master.
 ## Want your own?
 
 1. Fork [this repo](https://github.com/jshvn/ctan).
-2. Create an R2 bucket named `tlnet`, an API token with Object Read & Write scoped to it,
+2. Create an R2 bucket named `ctan`, an API token with Object Read & Write scoped to it,
    and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`
    and in `cloudflare/*.json`.
 3. Add the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`;
