@@ -64,17 +64,16 @@ safely under the 4.995 GiB single-part ceiling — and `multipart_chunksize = 51
 
 ### Cloudflare zone, Free plan
 
+The zone is configured by hand and the pipeline never calls the Cloudflare API. Section 6
+lists the rules the mirror wants and why.
+
 | Limit | Value | What the mirror asks |
 |---|---|---|
-| Cache Rules | 10 | 1 to 2 |
+| Cache Rules | 10 | 1 |
 | Transform Rules | 10, no regex on Free | 1 |
-| Configuration Rules | 10 | 1, disabling the HTML rewriters on the mirror host |
+| Configuration Rules | 10 | 1 |
+| Single Redirects | 10 | 1 |
 | Cacheable object size | 512 MB | 7 objects over it, served from R2 every time |
-| Purge by URL | 100 per call, 800 URLs/s per account | 0 while `CACHE=off` |
-| Purge everything | 5 per minute | unused |
-| API requests per token | 1,200 per 5 minutes | 3 to 6 a run |
-| API requests per IP | 200/s | under 1/s |
-| GraphQL | 300 per 5 minutes | 1 to 2 |
 | Upload through the zone | 100 MB | 0; uploads go to the S3 endpoint |
 
 ### GitHub Actions
@@ -174,8 +173,8 @@ grace. A paused check resumes on its next ping.
 
 ## 5. Runbook
 
-Local commands need the four R2 variables in the environment as `sync.yml` maps them,
-`AWS_CONFIG_FILE=aws.config`, and `CF_API_TOKEN` plus `CF_ZONE_ID` for the Cloudflare calls.
+Local commands need the four R2 variables in the environment as `sync.yml` maps them, and
+`AWS_CONFIG_FILE=aws.config`.
 Every task is safe to rerun unless its entry says otherwise: a second run makes the same
 writes with the same bytes, or none.
 
@@ -214,29 +213,15 @@ Deleting the state object does not start a seed; it fails every run, by design. 
 correctness, not for the budget: the delta is the whole tree, about 496k Class A and 133 GB
 from dante. Pause the healthcheck first.
 
-**Delete or purge one key.**
+**Delete one key.**
 
 ```sh
 aws s3 rm s3://ctan/<key>
-curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_cache" \
-  -H "Authorization: Bearer $CF_API_TOKEN" -H 'Content-Type: application/json' \
-  --data '{"files":["https://ctan.ijosh.com/<key>"]}'
 ```
 
-If upstream still has the key, the daily reconcile finds it missing and the next hourly run
+Nothing to purge: the edge holds nothing while the cache bypass rule is in place. If
+upstream still has the key, the daily reconcile finds it missing and the next hourly run
 re-fetches it. Editing the state by hand to get it back sooner is not worth the risk.
-
-**A ruleset was not applied.** `cloudflare:set` prints a warning naming the phase and moves on when
-the phase holds rules this repo did not write; the run still succeeds. It PUTs the whole
-phase at once, so applying it would delete them.
-
-```sh
-task cloudflare:get     # what each phase holds now, and whether its description carries our stamp
-```
-
-Fold anything worth keeping into that phase's file in `cloudflare/` — a ruleset's `rules`
-array takes as many entries as the plan allows — or clear the phase in the dashboard. The
-next run applies the file and stamps it, and from then on the phase is ours to rewrite.
 
 **Rotate a secret.**
 
@@ -246,8 +231,8 @@ gh secret set AWS_SECRET_ACCESS_KEY
 gh workflow run sync.yml && gh run watch
 ```
 
-Delete the old token in the Cloudflare dashboard after a green run. Safe: the first call
-with new credentials is a read.
+Delete the old R2 token in the Cloudflare dashboard after a green run. Safe: the first
+call with new credentials is a read.
 
 **Abort a stray multipart upload.**
 
@@ -276,3 +261,42 @@ with no run: check GitHub's status page for an Actions incident, re-enable the w
 it is disabled, otherwise dispatch by hand. A hand dispatch is the same run the cron would
 have started. Do not add an external trigger to compensate — the hour's work is not lost,
 only late.
+
+## 6. Zone configuration
+
+Set by hand in the Cloudflare dashboard, once. The pipeline makes no Cloudflare API call and
+holds no zone credentials: four rules that change roughly never are not worth a subsystem
+that can fail. Recorded here so the zone can be rebuilt, or a fork configured, without
+rediscovering any of it.
+
+Every rule is scoped to the mirror's hostname. A zone usually serves more than the mirror,
+and an unscoped path match reaches all of it.
+
+| Where | Rule | Expression | What to set |
+|---|---|---|---|
+| Configuration Rules | HTML rewriters off | `(http.host eq "ctan.ijosh.com")` | Email Obfuscation off, Rocket Loader off |
+| Cache Rules | cache off | `(http.host eq "ctan.ijosh.com")` | Cache eligibility: bypass cache |
+| Transform Rules | `/` serves CTAN's `index.html` | `(http.host eq "ctan.ijosh.com" and http.request.uri.path eq "/")` | Rewrite path to `/index.html` |
+| Single Redirects | directory URLs | `(http.host eq "ctan.ijosh.com" and ends_with(http.request.uri.path, "/") and http.request.uri.path ne "/")` | Dynamic, 302, target `concat("https://ctan.org/tex-archive", http.request.uri.path)`, query string not preserved |
+
+**The Configuration Rule is the one that matters.** Email Address Obfuscation rewrites every
+`text/html` response Cloudflare serves: it injects a script, encodes mailto addresses, and
+changes the length. Measured 2026-08-27, a 4,006 byte Catalogue entry was served as 4,216
+until the rule went on. About 7,300 files in the tree are HTML, and a mirror that alters
+them is not a mirror. Rocket Loader is the same hazard through a second switch.
+
+Cloudflare drops `content-length` from `text/html` responses whether or not those features
+are on, which is why `smoke` sizes an object from a one-byte ranged read rather than a HEAD.
+
+The other three are conveniences: without the cache rule the zone's default caching applies
+(it answers `DYNAMIC` today), without the transform rule `/` is a 404, and without the
+redirect rule a directory URL is a 404 rather than a trip to ctan.org.
+
+A rule already in one of those phases that serves another hostname is not ours to replace:
+a phase is written whole, so anything else in it would go. Add to it rather than over it.
+
+**If caching is ever wanted**, section 3 has the arithmetic: below 10M requests a month the
+free tier covers every read and caching saves nothing, a one-hour TTL is worthless because
+Cloudflare caches per datacentre, and only a 24-hour TTL pays — first at around 100M
+requests a month, which is roughly ten times what a CTAN mirror sees. Turning it on also
+means purging every changed key after each batch, which the pipeline no longer does.

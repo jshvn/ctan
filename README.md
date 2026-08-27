@@ -70,15 +70,9 @@ nothing for bandwidth, so traffic doesn't move the bill.
 
 ## Optional configuration
 
-Nothing below changes what the mirror uploads. Every one of these is unset by default, and
-a run with none of them set is a complete run.
-
 | Secret | What it turns on |
 | --- | --- |
 | `HEALTHCHECK_URL` | A healthchecks.io ping URL. The last step of every run pings it |
-| `CF_API_TOKEN` | A zone token that lets the run put `cloudflare/rules/*.json` on your zone |
-| `CF_ZONE_ID` | The zone that token writes to; both or neither |
-| `CF_ENABLE_AUTOMATION` | Set to anything and `sync` applies those rulesets every hour |
 
 **Alerting.** `HEALTHCHECK_URL` is the only alert the mirror has: a failed or missing run
 stops the ping, and healthchecks.io mails you when the grace passes. Point a check at cron
@@ -86,13 +80,12 @@ stops the ping, and healthchecks.io mails you when the grace passes. Point a che
 Unset, a run that stops arriving tells nobody. Pause the check before a seed — a multi-hour
 run outlasts any sensible grace.
 
-**Cloudflare.** The three `CF_*` values are what turns [`cloudflare/`](cloudflare/) on: the
-cache setting, `/` rewritten to `/index.html`, directory URLs sent to ctan.org, and
-Cloudflare's HTML rewriting turned off for your hostname, which the mirror needs to serve
-HTML byte for byte. [`cloudflare/README.md`](cloudflare/README.md) has the exact token
-permissions, what each ruleset does, and how to apply them by hand instead
-(`task cloudflare:get` and `task cloudflare:set`). Set none of them and every run still
-syncs, but `/` 404s until you add the rewrite yourself.
+**Zone rules.** Four rules are worth setting on the zone by hand: HTML rewriters off (the
+one that matters — Cloudflare otherwise alters every HTML file it serves), cache bypass, `/`
+rewritten to `/index.html`, and directory URLs sent to ctan.org. The pipeline does not touch
+Cloudflare and needs no zone token; section 6 of
+[`docs/reference.md`](docs/reference.md) has each rule, its expression and its settings.
+Skip them and every run still syncs, but `/` is a 404 and HTML is served rewritten.
 
 To run the pipeline locally, `task run -- task --dry sync` renders it inside the toolbox
 image (Apple `container` or Docker); with `AWS_*` variables exported, `task run -- task sync`
