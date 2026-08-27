@@ -55,8 +55,9 @@ behind the master.
 2. Create an R2 bucket named `ctan`, an API token with Object Read & Write scoped to it,
    and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`
    and in `cloudflare/*.json`.
-3. Add the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`;
-   optionally `HEALTHCHECK_URL` (a healthchecks.io ping URL) and `CF_API_TOKEN` plus
+3. Add the repository secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`
+   (`https://<account-id>.r2.cloudflarestorage.com`) and `AWS_REGION` (`auto`); optionally
+   `HEALTHCHECK_URL` (a healthchecks.io ping URL) and `CF_API_TOKEN` plus
    `CF_ZONE_ID` (a token with the zone's Cache Rules, Transform Rules and Single Redirect
    edit permissions) so the `/` rewrite and the directory redirects are applied from
    `cloudflare/`; without them, add a Transform Rule rewriting `/` to `/index.html` by hand.

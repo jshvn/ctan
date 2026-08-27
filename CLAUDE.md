@@ -33,9 +33,9 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
   `api.cloudflare.com`.
 - Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
   prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
-- Secrets are exactly six: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
-  `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`. The last two are optional: without them
-  `rules` is skipped.
+- Secrets are exactly seven: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
+  `AWS_REGION`, `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`; the workflow passes each to the
+  Taskfile by name. The last two are optional: without them `rules` is skipped.
 - Recompute any change that adds storage against the 133 GB baseline and the 200 GB ceiling.
 
 ## Must knows
