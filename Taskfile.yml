@@ -179,14 +179,14 @@ tasks:
     cmds:
       - >-
         awk -F'\t' -v gb={{.CEILING_GB}} '{ s += $2 }
-          END { printf "upstream: %d objects, %.2f GB, ceiling %d GB\n", NR, s / 1e9, gb; exit (s > gb * 1e9) }'
+          END { printf "upstream: %d objects, %.2f GB, ceiling %d GB\n", NR, s / 1e9, gb; exit (s > gb * 1e9) }' \
         {{.RUN}}/upstream.txt
       - mkdir -p {{.STAGING}} && find {{.STAGING}} -mindepth 1 -delete
       - df -Pk {{.STAGING}}
       # The largest single file must fit with 1 GiB to spare for RUN's text and the OS.
       - >-
-        awk -F'\t' -v kb="$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')"
-          '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }'
+        awk -F'\t' -v kb="$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" \
+          '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }' \
         {{.RUN}}/changed.txt
       - rm -f {{.RUN}}/batch-*.txt
       # Cumulative size from the listing; nothing is touched to plan. A file over the cap is
@@ -204,7 +204,7 @@ tasks:
                 printf "%d lines in %d batches\n", NR, n }
           function name(i) { return sprintf("%s/batch-%04d.txt", DIR, i) }
           function flush(  i, f) { if (!nb) return; f = name(++n)
-            for (i = 1; i <= nb; i++) print buf[i] > f; close(f); nb = sz = 0; split("", buf) }'
+            for (i = 1; i <= nb; i++) print buf[i] > f; close(f); nb = sz = 0; split("", buf) }' \
         {{.RUN}}/changed.txt
 
   tlpdb:
@@ -285,7 +285,7 @@ tasks:
           /^name /{split($0, a, " "); n = a[2]}
           /^containerchecksum /{split($0, a, " "); p = TL "/archive/" n ".tar.xz"; if (p in want) print a[2] "  " p}
           /^doccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".doc.tar.xz"; if (p in want) print a[2] "  " p}
-          /^srccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".source.tar.xz"; if (p in want) print a[2] "  " p}'
+          /^srccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".source.tar.xz"; if (p in want) print a[2] "  " p}' \
         {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb | shasum -a 512 -c --quiet; fi
       # The decision batch. The tlpdb it carries must be the one verified at the start of
       # the run, the .xz tlmgr downloads must decompress to it byte for byte, and every
@@ -300,7 +300,7 @@ tasks:
         awk -v TL="{{.TL}}" '/^name /{n=$2}
           /^containerchecksum /{print TL "/archive/" n ".tar.xz"}
           /^doccontainerchecksum /{print TL "/archive/" n ".doc.tar.xz"}
-          /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}' {{.TL}}/tlpkg/texlive.tlpdb
+          /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}' {{.TL}}/tlpkg/texlive.tlpdb \
         | LC_ALL=C sort | LC_ALL=C comm -23 - {{.RUN}}/tl/after.txt > {{.RUN}}/tl/missing.txt &&
         test ! -s {{.RUN}}/tl/missing.txt; }
 
@@ -334,7 +334,7 @@ tasks:
         rm -f {{.RUN}}/purge-*; test ! -s {{.RUN}}/urls.txt || { split -l 100 -a 5 {{.RUN}}/urls.txt {{.RUN}}/purge-;
         for f in {{.RUN}}/purge-*; do
         awk 'BEGIN { printf "{\"files\":[" } { printf "%s\"%s\"", (NR > 1 ? "," : ""), $0 } END { print "]}" }' "$f"
-        | {{.CURL}} -X POST -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @-
+        | {{.CURL}} -X POST -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @- \
           "{{.CF}}/purge_cache" -o /dev/null;
         wc -l < "$f" >> {{.RUN}}/purge.txt; sleep 0.3; done; }
 
@@ -363,7 +363,7 @@ tasks:
       - >-
         for f in {{.RUN}}/del-*; do
         awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
-             printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f"
+             printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
         > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
         | { test "$(grep -c Errors)" = 0; }; done
       - {task: purge, vars: {B: '{{.RUN}}/deleted.txt'}}
