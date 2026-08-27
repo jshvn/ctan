@@ -16,7 +16,7 @@ All measurements are from the two listings taken 2026-08-26 (local files
 every time in them: the listing client was Apple's `openrsync` on a machine in
 `America/Los_Angeles`, and `rsync` prints mtimes in the client's local zone (rsync
 `util1.c`, `timestring()`, uses `localtime_r`). The files carry PDT; every hour-of-day
-figure below has been converted to UTC. The base plan did not convert.
+figure below has been converted to UTC.
 
 ## The design in one paragraph
 
@@ -67,8 +67,8 @@ awk '$5 !~ /\//' SCRATCH/ctan-list-nolink.txt
 2026-08-27 00:15 UTC (the mirror served `2026-08-26-23-02`, one hour behind the listing's
 `00:02:01` mtime, which is that mirror's lag, not dante's). The `timestamp` line format is
 `year-month-day-hour-minute`; the daemon touches it at `:02` every hour (one mtime
-observed at `:02:01`; the base plan observed the same minute on its listing; mirmon's
-probe interval makes an hourly touch the only sensible reading). `FILES.*` regenerate once
+observed at `:02:01`, and a content stamp ending `-23-02` read back from a mirror an hour
+later; an hourly touch at `:02` is the only reading consistent with both). `FILES.*` regenerate once
 a day around 23:20 UTC (one observation each; `CTAN.sites` the day before at 23:21).
 
 ### When files change
@@ -102,7 +102,7 @@ release day 2026-03-01 was a Sunday), Tue 10,724 / 16.5 GB (MacTeX 2026-03-24), 
 in 30 days are `:10` (4,991 files, the ConTeXt burst), `:59` (2,271) and `:03` (1,379).
 
 Hour-slots with at least one change: 2,236 of 8,760 in the year (25.5%), 276 of 727 in
-the last 30 days (38%). The base plan's "283 of 720" was the same measure in PDT slots.
+the last 30 days (38%).
 
 ### How updates land
 
@@ -125,7 +125,7 @@ So a package is on disk within seconds; whether the daemon can serve a half-writ
 package to a listing that lands inside those seconds is **unverified** (it depends on
 whether CTAN's installer writes into place or renames a staged directory). The design
 does not need to know: a listing taken mid-burst sees some of the package's files; the
-next hour's listing sees the rest as additions and any file rewritten since as a change.
+the next run's listing sees the rest as additions and any file rewritten since as a change.
 Nothing in CTAN outside tlnet requires a package's files to arrive together (section 5).
 
 `FILES.last07days` is not an hourly feed. Verified on today's copy: dates only (no time),
@@ -197,9 +197,8 @@ Objects the directory symlinks materialize (from `deref.norm`, files under each)
 `macros/latex2e` 43,711 files / 5.74 GB, `documentation` 28,898 / 2.21 GB,
 `systems/windows` 19,174 / 23.64 GB, `languages` 9,722 / 0.45 GB, `fonts/metrics` 9,672,
 `fonts/greek/cbfonts-all` 2,926, `bibliography` 2,593 / 0.78 GB,
-`obsolete/systems/win32/fptex/current` 2,212 / 0.48 GB, `digests` 1,776. The base plan's
-alias list names `systems/win32` as the alias; it is the real directory, and
-`systems/windows` (target length 5) is the symlink.
+`obsolete/systems/win32/fptex/current` 2,212 / 0.48 GB, `digests` 1,776. `systems/win32` is
+the real directory; `systems/windows` (target length 5) is the symlink.
 
 Relative versus absolute, chains, and targets outside the module cannot be read from
 today's listing: `openrsync` prints no `-> target`. Real rsync does (`-r --list-only`
@@ -390,8 +389,8 @@ awk -f norm.awk RUN/upstream.raw \
 ```
 
 Today that is 496,149 lines, 132.99 GB, 37.7 MB as text, **3.10 MB as `.xz`** (`xz -T0`,
-3.5 s to compress, 0.1 s to decompress; `comm` of two such files 0.1 s). The base plan's
-496,155 / 133.01 GB did not apply today's `update-tlmgr-r*` exclude (6 files).
+3.5 s to compress, 0.1 s to decompress; `comm` of two such files 0.1 s). Without the
+`update-tlmgr-r*` exclude (6 files) it is 496,155 / 133.01 GB.
 
 Path first, tab-separated, `LC_ALL=C sort`: because the tab (0x09) sorts below every
 printable byte, sorting whole lines is the same order as sorting paths alone, so one sort
@@ -416,7 +415,7 @@ a changed last-modified time"), so every `rsync -a` CTAN mirror has the same bli
 | `touch` without change | different mtime | fetch, re-upload identical bytes | one wasted PutObject |
 | mtime set backwards (restore from backup, `cp -p` of an old copy) | different mtime | fetch | correct; the key is inequality, not order |
 | restore from backup with mtimes preserved and content unchanged | identical line | nothing | correct |
-| dante's daemon offline | no listing | run fails, next hour | mirror an hour stale |
+| dante's daemon offline | no listing | run fails, next run | mirror stale until it |
 | file deleted and re-added within the hour, same size and mtime | identical line | nothing | content is the same in every real case (the file came back from the same source); the only theoretical miss is a same-size same-second different-content re-add |
 | file replaced by a directory of the same name | `foo` gone, `foo/...` new | delete `foo`, add `foo/...` | correct; R2 keys `foo` and `foo/bar` can coexist, so order is irrelevant |
 | directory replaced by a file | reverse | reverse | correct |
@@ -521,7 +520,7 @@ cost of a repeat is bounded by one batch (4 GB, ~16k `PutObject`, free).
 at listing time. The state records U's line (listing time). Three cases:
 
 - Unchanged in between: line and bytes agree.
-- Changed in between: the bytes are newer than the line. Next hour's listing has a new
+- Changed in between: the bytes are newer than the line. The next run's listing has a new
   line, `comm` re-fetches, and the second upload is identical bytes. One wasted PutObject.
 - Gone in between: `--ignore-missing-args` skips it, it is absent from `landed`, the
   state does not gain it; if S had it, S keeps its old line until this run's deletion step
@@ -626,15 +625,15 @@ is a reconcile's job. The reconcile exists for what the hourly path cannot see a
   line for every key whose size matches, so a fresh runner or a deleted state costs one
   listing (497 Class A) and re-uploads only the mismatches, not 133 GB. This is also how a
   seed resumes from a bucket that already holds tlnet: the 17k tlnet keys join and are not
-  re-put. The base plan re-uploads the tlnet keys in that case; it need not.
+  re-put.
 - **A manual edit** in the dashboard, a bucket-side lifecycle, or a bug in the diff.
 - **Storage measurement** for the ceiling and `report` (sum of `Size`), the only place the
   mirror's size is measured.
 - **Nothing to do with partial multipart uploads.** An incomplete multipart upload creates
   no key; R2 aborts it by default seven days after initiation
   (`https://developers.cloudflare.com/r2/buckets/object-lifecycles/`: "Buckets have a
-  default lifecycle rule to expire multipart uploads seven days after initiation"). The
-  base plan lists this as something the reconcile catches; there is nothing to catch.
+  default lifecycle rule to expire multipart uploads seven days after initiation"). There
+  is nothing for the reconcile to catch.
 
 Storing upstream mtime as object metadata and comparing via `HEAD`: `aws s3 cp --metadata
 mtime=...` is supported (`x-amz-meta-*` on PutObject), but `HEAD` is Class B and the
@@ -717,6 +716,11 @@ is ~30 s when nothing else changed; nothing to skip.
 
 ## 8. Time budget of an hourly run
 
+"Next run" below is not "next hour": a scheduled run starts 15 to 45 minutes after its
+slot and a slot can be dropped (section 9), so the gap between two runs is anywhere from
+~15 minutes to ~2 h 45 min. The budgets are per run and none of them needs the next run
+to begin on time.
+
 Slot statistics, UTC hour-slots over the 365 days to 2026-08-27, stored set:
 
 ```
@@ -752,10 +756,11 @@ the walk), normalise and sort 496k lines ~1 s, state `GetObject` and `xz -dc` ~1
 `comm` 0.1 s, `xz -T0` of the new state 3.5 s per batch on this laptop (a runner is
 slower; call it 5 s), state `PutObject` ~1 s. Under 30 s before any file moves.
 
-Transfer rates are the unverified part. The base plan quotes, from a tlnet job log this
-file could not read, 22.7 MB/s from dante and ~96 `PutObject`/s at 32-way concurrency;
-carried here as the working figures. Every `sync` job's summary contains rsync's
-`--stats` block with `bytes/sec`; the first hourly runs replace these numbers.
+Transfer rates have one measurement. The tlnet run of 2026-08-26 05:15 UTC (job
+32933376123) moved 6.79 GB from dante in 299 s, **22.7 MB/s**, and `aws s3 sync` put at
+least 7,891 objects in 82 s, **~96 `PutObject`/s** at 32-way concurrency (the log drops
+lines, so a floor). Those are the working figures. Every `sync` job's summary contains
+rsync's `--stats` block with `bytes/sec`; the first hourly runs add to them.
 
 | Slot | Fetch at 22.7 MB/s | Upload at 96 obj/s | Whole run |
 |---|---|---|---|
@@ -771,20 +776,19 @@ Does `timeout-minutes: 55` hold on a release day? Not as a single run, and it ne
 Each installer copy is its own batch (any file over 4 GB is alone) with its own checkpoint;
 at 22.7 MB/s a batch is 5 min down and 5 min up, three of them 30 min, so the release
 hour fits with margin, but if the rate that day is a third of that (dante is busiest on
-release day) the run dies at 55 min with one or two batches committed and the queued run
-finishes the rest. The condition that must hold is per batch, not per run: one 6.87 GB
+release day) the run dies at 55 min with one or two batches committed and the next run
+finishes the rest, whenever it starts. The condition that must hold is per batch, not per run: one 6.87 GB
 file down and up within 55 minutes, i.e. a sustained **4.2 MB/s** combined. Anything
-slower than that on a release day leaves the ISO copies for later hours and everything
-else proceeds, because the small batches come first in the plan. The base plan's "a
-release day (20.9 GB, ~6 batches, ~40 min) fits" assumes the 22.7 MB/s rate; the
-checkpoint is what makes the number unimportant.
+slower than that on a release day leaves the ISO copies for later runs and everything
+else proceeds, because the small batches come first in the batch plan. At 22.7 MB/s the
+whole release day fits one run; the checkpoint is what makes the rate unimportant.
 
 Ordering of batches: small batches first, installer batches after, the decision batch
 last, so a slow hour delays only installers. `MAX_BATCHES=4` by default on an hourly run
 (`taskfile-architecture.md`): the run commits up to four batches and stops, leaving the
-rest to the next hour, so the release hour above (one small batch, three ISO batches, the
-decision batch) takes two hours and `timestamp` lags one hour that day; the seed raises
-the cap. Disk: one batch (≤4 GB, or one file ≤6.87 GB)
+rest to the next run, so the release hour above (one small batch, three ISO batches, the
+decision batch) takes two runs and `timestamp` lags by the gap between them, 15 minutes to
+2 h 45 min, that day; the seed raises the cap. Disk: one batch (≤4 GB, or one file ≤6.87 GB)
 plus ~100 MB of listings, under the 14 GB runner disk at all times.
 
 ## 9. Load on dante
@@ -800,62 +804,59 @@ referents, ~36% more `stat` calls than the recipe's walk, and the file list is ~
 longer), then one connection per batch (usually one, ~34 during the seed, never two at
 once) in which the daemon stats only the named paths and their implied directories and
 sends those files. The bytes sent are the same as the recipe's. The listing's wire size is
-**unverified** (the base plan says ~19 MB; `rsync -rL --list-only --stats` from the runner
-prints `File list size` and `Total bytes received`).
+**unverified** (`rsync -rL --list-only --stats` from the runner prints `File list size`
+and `Total bytes received`).
 
 So per hour it is the recipe's list plus a third, and the recipe's transfer; per month 720
 listings plus ~760 fetch connections. An `rsync -a` mirror that uses `-L` (TUG's advice for
 symlink-less systems) costs exactly this listing. It is within what CTAN asks each mirror
 to do. What CTAN asks in return is a fixed random minute, kept: the workflow cron is
-`M * * * *` with M drawn once by `shuf -i 0-59 -n 1` and never changed. Two refinements:
-M not in 00-05 (the `:02` `timestamp` touch and GitHub's "High load times include the
-start of every hour", `docs.github.com` schedule event), and no expectation of exactness
-(GitHub: "The `schedule` event can be delayed during periods of high loads"; the minute
-floats by minutes, which does not create the synchronised-clients peak the register page
-worries about). The maintainers' list etiquette (announce a seed of 133 GB beforehand, ask
-about `max connections` for the seed's 34 sequential connections) is the base plan's
-advice and **unverified** against the list's archive, which was not fetched.
+`M * * * *` with M drawn once by `shuf -i 0-59 -n 1` and never changed, and not in 00-05
+(the `:02` `timestamp` touch). That minute is nominal, which the next section is about.
 
-## Where this differs from the base plan
+### The fixed minute is nominal
 
-1. **Times.** Both listings are in PDT, not UTC; every hour-of-day figure in the base plan
-   is shifted by 7 hours (8 in winter). `timestamp` is touched at `:02` UTC as stated;
-   `FILES.*` regenerate at ~23:20 UTC, not "daily" at an unstated hour; the churn tables'
-   hour-slot counts change slightly (276 of 727 slots in 30 days, not 283 of 720). The
-   design sets `TZ=UTC` on every rsync call so the state file is zone-independent.
-2. **Listing format.** The base plan's 50.7 MB text and blank-size lines come from
-   `openrsync`; the runner's rsync prints `0`, digit separators and a 14-column size by
-   default, and `-> target` on symlinks. The design passes `--no-h` and parses by anchoring
-   on the date-time, not on columns.
-3. **`systems/win32` is real; `systems/windows` is the symlink.** The base plan's alias
-   list has them the other way round.
-4. **No `-r` on the batch fetch.** The base plan uses `-rLt --files-from`; with `-r` a
-   listed path that became a directory pulls an unplanned subtree. Verified with 3.5.0.
-5. **Vanished files do not fail the run.** The base plan fails the run on exit 23 and
-   retries next hour; this design passes `--ignore-missing-args`, accepts 23 and 24 on the
-   fetch, and records in the state only what landed. The listing itself must also accept
-   exit 23 (a dangling symlink upstream prints a warning and exit 23 in real rsync, verified),
-   which the base plan does not mention.
-6. **State line is `path<TAB>size<TAB>mtime`**, path first, so one sort serves both `comm`
-   calls; the base plan's `size mtime path` needs a second sort of the path projection.
-7. **The decision batch.** The base plan puts `tlpkg/` lines "in the last batch"; here the
-   root files, the tlnet root files and `tlpkg/` form a separate final batch on their own,
-   with `timestamp` last, so no assumption about `aws s3 cp --recursive`'s walk order is
-   needed and mirmon's stamp lands after the hour's files. The tlpdb is fetched and
-   verified at the start of any run that touches tlnet and used as the reference for every
-   batch's containers; the base plan verifies each batch against "what is local". A named
-   container missing from the bucket fails the run before the decision batch, as today.
-8. **The reconcile bootstraps the state**; the base plan reseeds from an empty state and
-   re-puts the live tlnet keys.
-9. **"Partial multipart" is not a reconcile case**; R2 aborts incomplete multipart uploads
-   after seven days by default and they never create a key.
-10. **Release-day timing.** The base plan's "~40 min fits in 55" depends on 22.7 MB/s; the
-    design's correctness does not, because each installer is its own checkpointed batch
-    and small batches run first. The per-batch requirement is 4.2 MB/s.
-11. **`--exact-timestamps`**, rclone's current R2 support, and server-side copies for
-    aliases are evaluated here; the base plan did not consider them.
-12. The stored set with today's `update-tlmgr-r*` exclude is 496,149 objects, 132.99 GB
-    (base plan: 496,155 / 133.01 GB).
+Observed in this repository: the one scheduled `sync` run in the history so far (cron
+`30 3 * * *`) was created at 04:09:16 UTC on 2026-08-26, 39 minutes after its slot; the
+next day's was 18 minutes late and not yet started when this was written. GitHub's
+schedule-event documentation says scheduled workflows "can be delayed during periods of
+high loads of GitHub Actions workflow runs", that "High load times include the start of
+every hour", and that a slot can be dropped. Treat 15 to 45 minutes late as normal
+operation and a dropped slot as possible; never assume a run starts at its cron minute.
+No external cron or paid runner is inside the constraints, so the design absorbs it:
+
+- **Listing cadence.** Runs are hourly on average, not hourly on the minute. Consecutive
+  listings can be ~15 minutes apart (a 45-minute-late run followed by an on-time one;
+  `concurrency: sync` without `cancel-in-progress` queues the second and starts it when
+  the first ends) and up to 2 h 45 min apart (a dropped slot, then a 45-minute-late run).
+  The diff is indifferent: `U \ S` is the same set whether computed 15 or 165 minutes
+  after the last run; only its size changes, and `MAX_BATCHES` bounds the run either way.
+  Dante sees one listing per run at a drifting minute, still one connection an hour on
+  average, and never synchronised with another mirror's cron.
+- **The `timestamp` copy.** The mirror never writes a stamp of its own; it copies
+  dante's, whose content is the last `:02` touch before the listing. The age mirmon
+  computes (probe time minus the stamp's content time) is therefore honest: our gap since
+  the last listing plus dante's own 0-59 minutes of stamp lag. Worst case: a run lists on
+  time at H:M, the H+1 slot is dropped, the H+2 run starts 45 minutes late and lists at
+  H+2:M+45. Until its decision batch lands the stamp still reads H:02 (H-1:02 if M < 2),
+  so the age reaches 2 h 45 min + 59 min = **3 h 44 min**, plus that run's own duration
+  before the decision batch (a minute normally, up to 55 on a release day) and mirmon's
+  probe interval: call it 4 to 5 hours. mirmon's bands (`https://ctan.org/mirrors/mirmon`,
+  2026-08-27): green up to 28 hours, then 28-52 hours, then "old", then "bad"; today's
+  median mirror age is 3 hours and ctan.org's own is 2 hours. On a good run this mirror
+  sits at the median; on the worst it is inside the green band by a factor of six.
+- **The cron minute.** The register page wants a fixed random minute so mirrors do not
+  hit dante together; GitHub's delay turns the real start into a spread of 15 to 45
+  minutes, which serves that purpose on its own. Whether a minute outside 00-05 reduces
+  the lateness is **unverified**: the documentation names the top of the hour as the busy
+  time, but the one observed run was 39 minutes late from a `:30` slot, so M is chosen for
+  CTAN's reason, not GitHub's. What the registration notes should say about the drift is
+  `official-mirror-and-url.md`'s.
+- The healthchecks period and grace that cover a late start, a long run and a dropped
+  slot without paging are `monitoring.md`'s; `report` prints the lateness (slot minute
+  from the workflow file against `date -u`), `taskfile-architecture.md`'s. The maintainers' list etiquette (announce a seed of 133 GB beforehand, ask
+about `max connections` for the seed's 34 sequential connections) is advice,
+**unverified** against the list's archive, which was not fetched.
 
 ## Open questions
 
@@ -942,5 +943,7 @@ Fetched 2026-08-26/27:
   (10 GB, 7-day eviction)
 - Local: `SCRATCH/ctan-list-deref.txt`, `SCRATCH/ctan-list-nolink.txt`,
   `SCRATCH/rsync-time.txt`, `staging/tlpkg/` (the 20.6 MB `texlive.tlpdb`), the
-  repository's `Taskfile.yml`, `aws.config`, `.github/workflows/sync.yml`, `CLAUDE.md`,
-  `docs/ctan-full-mirror-plan.md`
+  repository's `Taskfile.yml`, `aws.config`, `.github/workflows/sync.yml`, `CLAUDE.md`;
+  the Actions run history of this repository (scheduled run created 2026-08-26 04:09:16
+  UTC for the `30 3 * * *` slot)
+- https://ctan.org/mirrors/mirmon (age bands and today's ages, read 2026-08-27 03:03 UTC)

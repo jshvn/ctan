@@ -15,14 +15,13 @@ settles it. Live probes were HEAD/GET requests against `https://ctan.ijosh.com/`
   a latency feature for users far from the bucket and a cost feature only at traffic this mirror
   cannot draw.
 - The cache does not bound the bill either. Cloudflare evicts at its discretion, purge is by
-  URL, and a 404 flood is a Class B per request with or without a cache. The base plan's
-  "hard ceiling of $8.96/month" is not a ceiling. The real bound is $0.36 per million requests,
-  full stop.
+  URL, and a 404 flood is a Class B per request with or without a cache. The real
+  bound is $0.36 per million requests, full stop.
 - So caching is an optional layer with one switch, `CACHE: 'on'|'off'` in `Taskfile.yml`, off
   by default. Off means one rule on the zone: bypass cache for the whole host. On means two
   rules: bypass for the decision files, eligible with a one-day Edge TTL for everything else,
   plus purge-by-URL of changed and deleted keys after every batch.
-- Today's mirror already has staleness windows the base plan says it lacks. `.zip`, `.exe`,
+- Today's mirror already has staleness windows. `.zip`, `.exe`,
   `.tar.gz` and `.gz` are on Cloudflare's default extension list, so `install-tl.zip`,
   `install-tl-unx.tar.gz`, `install-tl-windows.exe`, `update-tlmgr-latest.exe` and (in a full
   mirror) `FILES.byname.gz` and `tds.zip` are cached for 120 minutes with nothing purging them,
@@ -60,7 +59,7 @@ END{q[1]=scheme;h=1;t=1;seen[scheme]=1
 | `scheme-basic` | 138 | 299 | 0.17 GB |
 
 Plus five uncached GETs per run (`texlive.tlpdb.xz`, `.sha512`, `.sha512.asc`, and the
-installer's own files). The base plan's 11,919 is within 0.1% of this.
+installer's own files).
 
 ### Where the money starts
 
@@ -76,8 +75,7 @@ fetch costs, Argo routing charges, Workers execution, and R2 operations",
 | $5 | 23.9M | 2,006 | 66.9 |
 | $10 | 37.8M | 3,171 | 105.7 |
 
-Installs/month = GETs ÷ 11,913. A `tlmgr update` user is ~100 to 150 GETs a month (base
-plan's figure, unverified here), so the free tier is also ~70,000 to 100,000 regular users.
+Installs/month = GETs ÷ 11,913. A `tlmgr update` user is ~100 to 150 GETs a month (an estimate from the 30-day container churn, not re-derived here), so the free tier is also ~70,000 to 100,000 regular users.
 
 ### What real CTAN traffic looks like
 
@@ -108,8 +106,9 @@ world-class mirror's traffic is single-digit dollars uncached. That is the whole
   which is Cloudflare saying the ordinary cache evicts. A 133 GB long tail on a Free zone will
   be evicted constantly; the worst case with the cache is the worst case without it. A 404
   flood (`/x/<random>`) is one Class B per request under any configuration, since 404s must
-  not be stored (section 4). The base plan's ceiling ("every object refetched from origin every
-  day, $8.96") assumes evictions happen at most daily. Nothing documents that.
+  not be stored (section 4). A ceiling of the form "every object refetched from origin once a
+  day" would need evictions to happen at most daily, and nothing documents any eviction
+  schedule.
 - It does bound origin fetches for hot objects. The ~11,900 containers of a `scheme-full`
   install are the same for every user on a platform; with a warm edge they cost zero Class B.
 - It buys latency. `tlmgr` downloads sequentially over one connection (`TLDownload` persistent
@@ -239,8 +238,9 @@ passed through, 13.6 GB means Cloudflare pulled the whole file twice. Seven obje
   ([Purge cache](https://developers.cloudflare.com/cache/how-to/purge-cache/)).
 - Purge options on Free: "URL, Hostname, Tag, Prefix, and Purge Everything" (same page; all
   methods reached every plan on 2025-04-01,
-  [blog](https://blog.cloudflare.com/instant-purge-for-all/)). The base plan's "by URL or
-  everything" is out of date; prefix and hostname exist on Free at 5 calls a minute.
+  [blog](https://blog.cloudflare.com/instant-purge-for-all/)). Prefix and hostname purge exist
+  on Free at 5 calls a minute; neither is used here: an hourly delta has no common prefix, and a
+  hostname purge is a purge of everything.
 - URL rules: "the host part of the URL is not case-sensitive ... However, the path portion is
   case-sensitive"; "Always use UTF-8 encoded URLs"; "Wildcards are not supported on single file
   purge"; with a Transform Rule "you must use the non-transform (end user) URL"
@@ -270,7 +270,7 @@ return HTTP 404s until the cache TTL (Time to Live) expires and the new object i
 or the cache is purged." ([Consistency model](https://developers.cloudflare.com/r2/reference/consistency/)).
 Observed today on `nonexistent.zip`: MISS, HIT, EXPIRED after the 3-minute default.
 
-This resolves the base plan's open question. With `"status_code_ttl": [{"status_code_range":
+With `"status_code_ttl": [{"status_code_range":
 {"from": 300}, "value": -1}]` (no-store) in the rule, a 404 is never stored, so a key that did
 not exist cannot be served stale after it appears, and **added keys need no purge**. Only keys
 that already existed (changed) and keys removed (deleted; "An object you delete from R2, but
@@ -299,9 +299,9 @@ final batch, and every batch purges after its uploads.
 
 ### The seed
 
-With `CACHE: 'off'` during the seed, nothing is cached and nothing is purged. The base plan's
-496,149-URL stream (4,962 calls; at 800 URLs/s at least 620 s; against 1,200 calls per 5
-minutes at least 21 minutes) is unnecessary work. Switch to `on` after the seed's `changed`
+With `CACHE: 'off'` during the seed, nothing is cached and nothing is purged. Purging
+the whole tree at the seed (496,149 URLs, 4,962 calls; at 800 URLs/s at least 620 s; against
+1,200 calls per 5 minutes at least 21 minutes) would purge entries that were never made. Switch to `on` after the seed's `changed`
 reaches zero. At switch-on nothing but default-extension objects (≤120 min old) is in the
 cache; one Purge Everything (5 a minute on Free) clears even those.
 
@@ -341,9 +341,9 @@ It does not change latency for cold objects: the upper tier sits next to the buc
 It is a zone setting, not a per-run action: `GET /zones/{zone_id}/cache/tiered_cache_smart_topology_enable`
 returns `{"id": "tiered_cache_smart_topology_enable", "editable": true, "value": "on"|"off",
 "modified_on": ...}`; `PATCH` with `{"value": "on"}` sets it. The docs' enable call is
-`PATCH`, not the base plan's `POST`, and needs "`Zone Settings Write`" or "`Zone Write`"
+`PATCH` and needs "`Zone Settings Write`" or "`Zone Write`"
 ([API](https://developers.cloudflare.com/api/resources/cache/subresources/smart_tiered_cache/methods/edit/)).
-Re-patching every hour is idempotent and within limits but grants the token write access to
+Re-patching every run is idempotent and within limits but grants the token write access to
 every zone setting for no gain. Design: turn it on once in the dashboard (Caching → Tiered
 Cache → Smart), and `rules` reads it back with `Zone Settings Read` and fails the run when
 `CACHE` is on and the value is off.
@@ -404,7 +404,8 @@ Choices:
   (the API schema fetched today states no maximum for `edge_ttl.default`; unverified). Purge
   keeps the cache honest while purge works; one day is the bound on how long a purge that
   silently failed can serve old bytes. Cost of the shorter TTL: one refetch per warm object per
-  day, ~13k Class B a day for the base plan's hot set, 0.4M a month, free.
+  day, ~13k Class B a day for a hot set of ~13k objects (one install set plus binaries for a few
+  platforms), 0.4M a month, free.
 - Status code TTL: 2xx one day (206 included, since a range miss stores the whole object), 3xx
   and up no-store. Combining `default` with `status_code_ttl` under `override_origin` is the
   dashboard's "Edge TTL + Status code TTL" pair; that the API accepts this exact shape is
@@ -415,8 +416,8 @@ Choices:
 - `disable_stale_while_updating`: R2 never sends `stale-while-revalidate`, so this is a
   no-op guard against a future header.
 - Not set: `respect_strong_etags` (R2's ETag is already quoted and strong; irrelevant with an
-  override TTL), `origin_cache_control` (forced on for Free), `cache_reserve` (paid, "does not
-  apply" is the base plan's claim; not re-verified because it is not used), `vary`.
+  override TTL), `origin_cache_control` (forced on for Free), `cache_reserve` (paid; not used, so not
+  evaluated), `vary`.
 
 ### `cloudflare/cache-off.json`
 
@@ -538,7 +539,7 @@ rules:
 ```
 
 Runs at the head of `sync`, before `fetch`: a rejected file fails the run before anything is
-uploaded. Three `GET`s an hour; a `PUT` only after a merged change. Whether the entrypoint `PUT`
+uploaded. Three `GET`s per run; a `PUT` only after a merged change. Whether the entrypoint `PUT`
 creates the phase ruleset when none exists is unverified (the create-api page says to create it
 with `POST /zones/{zone_id}/rulesets` and `"kind": "zone", "phase": ...` if absent); the first
 run on a fresh zone tells, and the fallback is that one `POST` by hand.
@@ -585,7 +586,7 @@ Permission names as they appear on the [permissions page](https://developers.clo
 | Zone → Cache Purge | `purge_cache` | "Accepted Permissions ... `Cache Purge`" |
 | Zone → Single Redirect → Edit | the redirect phase `PUT` | "Single Redirect Edit" in the zone table of the permissions page |
 | Zone → Zone Settings → Read | the Smart Tiered Cache `GET` | "`Zone Settings Write` `Zone Settings Read` `Zone Read` `Zone Write`" on the GET reference |
-| Account → Account Analytics → Read | `report`'s usage query (`monitoring.md`) | base plan |
+| Account → Account Analytics → Read | `report`'s usage query (`monitoring.md`) | `monitoring.md` |
 
 The create-api page also lists "Account Rulesets > Edit" and "Account Filter Lists > Edit".
 Those serve account-level rulesets and lists in expressions; this design uses neither.
@@ -766,27 +767,6 @@ flip `CACHE` to `on`, merge, run once by hand, watch `smoke`'s HIT line, and pur
 once from the dashboard to drop any default-extension copies. Switching off again is the
 reverse; the bypass rule takes effect at the next `rules` run and existing entries are simply
 ignored.
-
-## Where this differs from the base plan
-
-| Base plan | Here | Evidence |
-|---|---|---|
-| Caching "adds nothing at any traffic we can model, with a hard ceiling of $8.96/month" | No ceiling exists with or without the cache; evictions are undocumented and a 404 flood is uncached by design. Realistic uncached maximum is single-digit dollars. | Cache Reserve exists "to eliminate cache evictions"; ftp.fau.de 95 TB/year → $2.50 to $7 |
-| Cache rule, tiered cache and purge are part of the design | Optional layer, off by default, one-line switch, trigger at 5M Class B/month | section 1 |
-| Purge every uploaded key, 496k URLs at the seed, 25 to 45 minutes | Purge changed and deleted keys only; the seed purges nothing; 404s are never stored | R2 consistency page on cached 404s; live MISS/HIT/EXPIRED on `nonexistent.zip` |
-| "This is the same width as today's archive-then-tlpdb window" and today has no cache windows | Today's mirror caches `install-tl.zip`, `install-tl-unx.tar.gz`, `install-tl-windows.exe`, `update-tlmgr-latest.exe` for 120 min and 404s for 3 min, unpurged; `FILES.byname.gz` and 30 `.exe`/`.gif` under `tlpkg/` would join them | live probes 2026-08-26 |
-| Purge after the last upload | Purge the changed keys before `tlpkg/` lands; PUT then purge, never purge then PUT | section 4, window 3 |
-| Edge TTL "long" | One day; Free minimum is 2 hours | edge-browser-cache-ttl page |
-| `POST .../tiered_cache_smart_topology_enable` every run; scope "confirm when creating the token" | `PATCH`; needs `Zone Settings Write`; it is a persistent zone setting; set once, read back with `Zone Settings Read` | API reference pages |
-| Purge "by URL (800 URLs/s, 100 per call) or everything (5/min)" | Hostname, tag and prefix are also on Free at 5 requests/minute, bucket 25 | purge-cache page; blog 2025-04-01 |
-| `PUT .../entrypoint` "is idempotent" | It replaces the rules and creates a new version every time; the task `GET`s and `PUT`s only on change | API description "creating a new version" |
-| Token: Cache Purge, Cache Rules Edit, Transform Rules Edit, Account Analytics Read | plus Zone Settings Read; the docs also name Account Rulesets Edit and Account Filter Lists Edit for cache rules, to be tried without | create-api page |
-| Purge propagation "~seconds" | P50 234 to 250 ms for single-file purge; under 150 ms for the other kinds | Cloudflare blog 2024-09-24, 2025-04-01 |
-| `scheme-full`: 11,919 GETs | 11,913 (awk in section 1) | tlpdb |
-| Rule expression as prose | Exact JSON, two rules with disjoint expressions, MiKTeX and tlcontrib indexes added, `FILES.byname.gz` and the root installers named | section 7, 8 |
-| Range requests not discussed | A range miss fetches and stores the whole object; ranges are served from the whole entry | live probe on `texlion.gif` |
-| Query strings not discussed | In the default key; excluded by the rule | live probe, cache-keys page |
-| Ordering of `texlive.tlpdb.sha512` vs `.xz` not discussed | Window 4; fix belongs to `taskfile-architecture.md` | `TLPDB::from_file` order |
 
 ## Open questions
 

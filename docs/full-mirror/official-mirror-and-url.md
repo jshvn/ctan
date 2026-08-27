@@ -91,8 +91,8 @@ mirror_list doesn't end in a slash ('/'), mirmon adds a slash."
 |---|---|---|---|
 | HTTPS access to the whole tree at one base address | `https://ctan.ijosh.com/`, tree at the root | meets | `curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512` gives `HTTP/2 200`; `curl -sI http://ctan.ijosh.com/...` gives `301` to https |
 | Mirror from `rsync.dante.ctan.org` | `SOURCE` is dante already; the full mirror lists and pulls from it only | meets | `Taskfile.yml` `SOURCE` |
-| Sync at least hourly | hourly cron | meets with caveat | GitHub cron is delayed under load and disabled after 60 idle days (monitoring.md, sync-with-dante.md); mirmon calls under 28 h fresh, so a missed hour is invisible to CTAN |
-| Fixed random minute, kept forever | `cron: 'M * * * *'` with M chosen once | meets | workflow file; a fork must pick its own M |
+| Sync at least hourly | hourly cron; the run starts 15 to 45 minutes after its slot, and a slot can be dropped | meets with caveat | GitHub: scheduled workflows "can be delayed during periods of high loads of GitHub Actions workflow runs" and may be dropped; runs stop after 60 days without a commit (https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows). Observed here: the `30 3 * * *` run of 2026-08-26 was created at 04:09:16 UTC, 39 minutes late. Worst age mirmon can see after one dropped slot is about 3 h 46 min, 7 h 46 min as displayed (arithmetic in section 7), inside the 28-hour fresh band |
+| Fixed random minute, kept forever | `cron: 'M * * * *'` with M chosen once; dante is contacted 15 to 45 minutes after M | meets with caveat | workflow file; a fork must pick its own M. The rule exists to spread mirrors' contacts with dante; GitHub's drift spreads ours further, it never bunches them |
 | Whole tree with deletions | list-diff with deletions; symlinks become objects; tlnet's 14,874 versioned container links are excluded | meets with caveat | `grep -c '^l.* systems/texlive/tlnet/' SCRATCH/ctan-list-nolink.txt` = 14874. `FILES.last07days` lists those versioned names (155 of its 8,229 lines, `grep -cE '\.r[0-9]+\.tar\.xz$'`), so a reader of `FILES.byname` gets a 404 for them on our mirror. See Open questions |
 | 60 GB free, permanent connectivity | R2, no disk | meets | R2 has no bucket size limit (limits.md) |
 | `index.html` in the tree served as a file, never as a directory's index | R2 serves keys only | meets | `curl -sI https://ctan.ijosh.com/index.html` gives 200 text/html, and `/` is a separate rewrite |
@@ -178,7 +178,7 @@ awk '$1 ~ /^[-d]/ && $5 != "." {p=$5; sub(/\/[^\/]*$/,"",p); n[p]++} END{...}' S
 |---|---|---|---|---|---|
 | a | None; directory URLs 404 | $0 | nothing | one redirector hit in about 15 lands on a 404 page; CTAN's own `index.html`, which links `biblio/`, `fonts/` and the rest, is a page of dead links | acceptable, but (d) is free |
 | b | One generated page per directory, uploaded as an object | $0. 27,262 PutObject once; about 900 a month (dirs touched, with ancestors); about 2 KB a page, about 55 MB in all, `tlnet/archive` about 2.5 MB | `awk` over the listing already in `RUN/`, so no new tool. The key cannot be `<dir>/index.html`, since 111 real files carry that name, which is exactly why CTAN's Apache recipe says `DirectoryIndex disabled`. Use the key `<dir>/` itself (S3 allows keys ending in `/`; whether R2's custom-domain path maps `/dir/` to that key is unverified, see Open questions) or `<dir>/.index.html` plus one Transform Rule rewriting paths that end in `/` (a dynamic rewrite with `concat`, allowed on Free, no regex). The pages are not upstream files, so the state file and the reconcile must know the pattern and never delete them, `stale`'s `comm` must filter them out, and, if the cache is switched on, caching.md must exclude or purge them | a second class of object to reason about in `publish`, `stale`, reconcile and `smoke`; staleness bounded by one run | not adopted; kept in reserve |
-| c | A Worker | Free plan is 100,000 requests a day, then "Error 1027" for everyone (https://developers.cloudflare.com/workers/platform/limits/). Routes are host/path prefixes, so a listing Worker fronts every request; one `scheme-full` install is 11,919 GETs (base plan), so about eight installs a day exhaust the quota and the mirror is down until midnight UTC | `wrangler`, a second deploy path, a Worker secret with R2 access, and each listing is an R2 `list()` call, Class A | the tools list (`rsync aws gpg shasum xz curl task` only), "workflows install tools and run one task", zero cost at any traffic | reject |
+| c | A Worker | Free plan is 100,000 requests a day, then "Error 1027" for everyone (https://developers.cloudflare.com/workers/platform/limits/). Routes are host/path prefixes, so a listing Worker fronts every request; one `scheme-full` install is 11,919 GETs (cost-estimates.md), so about eight installs a day exhaust the quota and the mirror is down until midnight UTC | `wrangler`, a second deploy path, a Worker secret with R2 access, and each listing is an R2 `list()` call, Class A | the tools list (`rsync aws gpg shasum xz curl task` only), "workflows install tools and run one task", zero cost at any traffic | reject |
 | d | Redirect Rule; directory URL to `https://ctan.org/tex-archive/<path>` | $0; 1 of 10 Single Redirects on Free ("Number of rules 10, Wildcard support Yes, Regex support No", https://developers.cloudflare.com/rules/url-forwarding/) | expression `http.request.uri.path ne "/" and ends_with(http.request.uri.path, "/")`, target `concat("https://ctan.org/tex-archive", http.request.uri.path)`, status 302. Single Redirects run before URL Rewrite Rules (same page, "Execution order"), so the `ne "/"` clause is what keeps the landing-page rewrite alive | a directory URL without the trailing slash still 404s (Apache would 301 it); users leave our host for a page that is better than an Apache listing (package metadata, per-file links). Nothing on CTAN's pages forbids it; ask in the registration Notes | adopted |
 | e | An R2-native listing | | none exists. https://developers.cloudflare.com/r2/buckets/public-buckets/ describes custom domains and `r2.dev` only; `grep -iE 'listing|index' SCRATCH/r2_buckets_public-buckets.md` finds nothing about directories; `r2.dev` is "rate-limited and should only be used for development purposes" | | not available |
 
@@ -324,10 +324,12 @@ reads every redirected alias back. Copies cost:
 
 The aliases are 48% of the bytes and $0.96 of the $1.84. That is the price of every CTAN
 URL working verbatim with no state outside the bucket, and it is under a dollar. Store the
-copies. The stored set is 496,149 objects, 132.99 GB (the base plan's 496,155 and 133.01 GB
-less the six `update-tlmgr-r*` files that `fetch` already excludes), with one more
-correction: the directory alias that costs 23.64 GB is `systems/windows`, not
-`systems/win32`.
+copies. The stored set is 496,149 objects, 132.99 GB: what `rsync -rL` lists, less tlnet's
+14,874 versioned containers and the six `update-tlmgr-r*` files that `fetch` excludes
+(`update-tlmgr-r79982.exe`, `.sh`, their `.sha512` and `.asc`; 0.0136 GB). tlcontrib's 261
+versioned containers (`systems/texlive/tlcontrib/archive/*.r[0-9]*.tar.xz`, 0.46 GB) are
+excluded as well and are not subtracted from the figures above. The directory alias that
+costs 23.64 GB is `systems/windows`; `systems/win32` is the real directory.
 
 ## 5. The canonical URL
 
@@ -350,8 +352,8 @@ grep -E '^  ctan\.' CTAN.sites | wc -l                             -> 24 hostnam
 grep -c cicku CTAN.sites                                           -> 45 lines; 15 country-prefixed hosts of one operator
 ```
 
-The base plan's "about a dozen at the host root" is 21 (27 counting HTTP duplicates); the
-rest is right. `ctan.ijosh.com/` is the third most common shape and the most common among
+Twenty-one HTTPS URLs (27 counting their HTTP twins) sit at the host root.
+`ctan.ijosh.com/` is the third most common shape and the most common among
 hosts named `ctan.*`. Examples with the identical shape are `ctan.math.illinois.edu`,
 `ctan.mirror.rafal.ca`, `ctan.net`, `ctan.tetaneutral.net` and `ctan.joethei.xyz`.
 
@@ -504,6 +506,31 @@ Security settings that would break the probe, and the default of each:
 Leave every one at its default. `smoke` reading `timestamp` back through the domain each
 run is the check that they still are.
 
+### Late runs and the age CTAN sees
+
+GitHub starts a scheduled run 15 to 45 minutes after its cron minute and sometimes not at
+all (the docs' "can be delayed during periods of high loads"; observed here 39 minutes on
+2026-08-26). Upstream rewrites `timestamp` at :02 every hour, and our copy carries the
+value dante held at the moment of our listing. Take cron minute M, lateness L (0 to 45
+min), run length D (about 1 min for an hourly delta):
+
+```
+run k      lists at M + L1; the stamp it copies is the last :02 before that, so already up to 60 min old
+run k+1    dropped
+run k+2    lands at M + 120 + L2 + D
+age just before run k+2 lands = 120 + L2 + D + (stamp age at run k) - L1
+worst case: L1 = 0, L2 = 45, D = 1, stamp age 60   ->  226 min, about 3 h 46 min
+two dropped slots                                   ->  about 4 h 46 min
+a whole day of failed runs                          ->  about 25 h, still under the 28 h band
+```
+
+mirmon probes each site at most every 4 hours (`max_poll` default `4h` in the manual), so
+the age it displays can lag the real one by up to 4 hours more: about 7 h 46 min displayed
+after one dropped slot. The fresh band ends at 28 hours, so a dropped slot is invisible and
+a full day of failures is still "fresh". The registration Notes say nothing about start-time
+drift: CTAN measures age, not punctuality, and the fixed-minute rule is about not bunching
+mirrors' contacts with dante, which drift spreads rather than concentrates.
+
 ## 8. HTTP semantics, R2 versus Apache
 
 Observed on `https://ctan.ijosh.com/systems/texlive/tlnet/` and on Apache/nginx mirrors:
@@ -554,13 +581,12 @@ Observed on `https://ctan.ijosh.com/systems/texlive/tlnet/` and on Apache/nginx 
 `HTTPS://ctan.ijosh.com` with the HTTP, FTP and rsync fields blank. Country United States,
 city and region those of the bucket's location (verify in the dashboard). Notes: served
 from Cloudflare's network with the origin in R2; directory URLs redirect to
-`ctan.org/tex-archive`.
+`ctan.org/tex-archive`. Nothing about start-time drift (section 7).
 
 **Storage set.** Everything `rsync -rL` yields minus tlnet's versioned containers and its
 six `update-tlmgr-r*` files: 496,149 objects, 132.99 GB, $1.84/month, of which the copies that stand in for symlinks
-are 64 GB and $0.96. No redirect stands in for any alias. The correction to the base plan
-is that the 23.64 GB directory alias is `systems/windows`, whose real directory
-`systems/win32` is what MiKTeX links.
+are 64 GB and $0.96. No redirect stands in for any alias. The 23.64 GB directory alias is
+`systems/windows`; its real directory `systems/win32` is what MiKTeX links.
 
 **Index strategy.** One Single Redirect, `http.request.uri.path ne "/" and
 ends_with(http.request.uri.path, "/")`, action 302 to
@@ -584,38 +610,6 @@ back every run with a plain `curl`, which is the same thing mirmon does.
 Endpoints and secrets change only as caching.md already requires (`api.cloudflare.com`,
 `CF_API_TOKEN`, `CF_ZONE_ID`); the redirect rule rides on that token with the Single
 Redirect edit scope added.
-
-## 11. Where this differs from the base plan
-
-- `systems/win32` is the real directory and `systems/windows` the symlink (listing:
-  `lrwxrwxrwx ... 2007/03/02 systems/windows`, `drwxrwxr-x ... systems/win32`). The base
-  plan's table names `systems/win32` as the alias directory. MiKTeX links `win32`.
-- Directories: 27,262 once aliases are materialised, not 18,417; that is the count any
-  index-object scheme carries.
-- Root-hosted mirrors: 21 HTTPS URLs, not "about a dozen".
-- "Let CTAN's own `index.html` be the front page": its links are directory URLs, which are
-  404s on R2 unless the redirect rule exists, and it says nothing about how to use this
-  host. Recommendation changed to our page at `/` and CTAN's at `/index.html`.
-- The Worker option in the base plan's open questions is closed: a listing Worker fronts
-  all traffic and the Free plan's 100,000 requests a day is about eight installs.
-- `FILES.byname` and `FILES.last07days` list tlnet's versioned container names (155 of the
-  8,229 lines in the 7-day file), which the stored set omits. The base plan's open question
-  on keeping them ($0.10/month) gains a reason on the "keep" side; the decision belongs to
-  verification-and-security.md and cost-estimates.md.
-- CDN precedent: the base plan has none; `cicku.me` (15 hosts, Cloudflare),
-  `mirror.kris.fail` (Cloudflare) and `mirrors.aliyun.com` (Tengine CDN) are listed and
-  monitored today.
-- `README.mirrors` is a symlink to `CTAN.sites`; `tds`, `tds.zip` and `digests` resolve
-  under `info/`; `fonts/metrics` to `fonts/psfonts`. Not in the base plan; needed for the
-  alias table.
-- The stored set is 496,149 objects and 132.99 GB, not 496,155 and 133.01: today's `fetch`
-  also excludes `/update-tlmgr-r*`, six files (`update-tlmgr-r79982.exe`, `.sh`, and their
-  `.sha512` and `.asc`, 0.0136 GB), and the set keeps that exclusion. The set also keeps
-  tlcontrib's versioned containers out (261 files, 0.46 GB in the listing); those are not subtracted
-  from the figures above.
-- Everything else in the base plan's two sections (hourly, dante, HTTPS, `/timestamp`
-  uncached, 28-hour band, `mirrors.ctan.org` links files only, register at the root)
-  checks out.
 
 ## Open questions
 
@@ -668,6 +662,7 @@ Fetched 2026-08-26/27:
 - https://developers.cloudflare.com/waf/managed-rules/
 - https://developers.cloudflare.com/cache/concepts/default-cache-behavior/
 - https://docs.aws.amazon.com/cli/latest/reference/s3/cp.html
+- https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
 - `tlmgr.pl` from https://ctan.ijosh.com/systems/texlive/tlnet/archive/texlive.infra.tar.xz
 - HEAD/GET probes of https://ctan.ijosh.com/ and of the mirrors named in sections 3, 6 and 8 (illinois, clarkson, mit, rafal, ibiblio, latex.us, ctan.net, tex.org.uk, ctan.tikz.jp, us/gb.mirrors.cicku.me, aliyun, tencent, kris.fail, hoobly)
 - `SCRATCH/ctan-list-deref.txt`, `SCRATCH/ctan-list-nolink.txt`, `SCRATCH/FILES.last07days`, `SCRATCH/CTAN.sites`, `staging/tlpkg/texlive.tlpdb`

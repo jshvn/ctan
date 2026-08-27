@@ -15,9 +15,9 @@ Summary:
   installer and updater checksums, the tlcontrib tlpdb, and the two TeX Live ISO checksums.
   Everything else is copied as-is, and one upstream checksum file (`MacTeX.pkg.sha512`) is
   stale today, which is why unsigned checksums are never enforced.
-- With only the delta on disk, the five tlnet checks still run in full, but one design
-  point the base plan leaves open has to be fixed: a container is checked against the
-  tlpdb of the same run, so `tlpkg/` is fetched and verified first and uploaded last.
+- With only the delta on disk, the five tlnet checks still run in full. A container is
+  checked against the tlpdb of the same run, so `tlpkg/` is fetched and verified first and
+  uploaded last.
   "Every named container exists" is checked against what the bucket will hold after the
   run (state file plus delta minus deletions), not against dante's listing.
 - The TeX Live signing subkey expires 2027-07-13, 320 days from today, confirmed against
@@ -27,7 +27,7 @@ Summary:
   fetched: 496,149 objects and 132.99 GB against `CEILING_OBJECTS=650000` and
   `CEILING_GB=175`. A release day adds 20.94 GB and stays under it.
 - Nothing here needs a tool outside `rsync`, `aws`, `gpg`/`gpgv`, `shasum`, `xz`, `curl`,
-  `task`. Two secrets are added for Cloudflare, as the base plan already requires.
+  `task`. Two secrets are added for Cloudflare (caching.md).
 
 ## 1. What is signed on CTAN
 
@@ -108,7 +108,7 @@ bucket holds and has verified); `RUN/changed.txt` is `comm -13 applied upstream`
 delta; `RUN/deleted.txt` is the path-only `comm -23`. `staging/` holds one batch, under
 CTAN's own paths, so the tlnet tree is at `staging/systems/texlive/tlnet/`.
 
-### The problem the base plan leaves open
+### Which tlpdb a container is checked against
 
 "The container checksum of every container in the delta" is checked against a tlpdb. Which
 one? If `archive/foo.tar.xz` is in batch 1 and `tlpkg/` is in the last batch, the run has
@@ -131,7 +131,7 @@ EOF
 Checks 1 to 3 run on `RUN/manifest/`; checks 4 and 5 run per batch against the tlpdb in
 `RUN/manifest/`. When the last batch lands, the `tlpkg/` files in `staging/` must be byte
 for byte the ones in `RUN/manifest/` (`cmp`), or dante moved between the manifest and the
-batch and the run fails; the next hour retries. This is the same "mid-update" class as
+batch and the run fails; the next run retries. This is the same "mid-update" class as
 today's rsync exit 23.
 
 ### The five checks, restated for a delta
@@ -255,7 +255,7 @@ today's rsync exit 23.
    ```
 
    Cost: one Class B per run that touches tlnet. If it ever fires, the fix is to delete
-   the listed keys from the state file so the next hour refetches them.
+   the listed keys from the state file so the next run refetches them.
 
 ### The same checks for tlcontrib and the ISO
 
@@ -357,7 +357,8 @@ awk 'function sz(){return (NF==4)?0:$2} $1 ~ /^-/ {n++; s+=sz()} $1 ~ /^l/ {l++}
 | Second (2026-03-24, MacTeX) | 293 | 14.01 GB |
 | Third (2021-03-17) | 42 | 2.32 GB |
 
-The base plan's 496,155 / 133.01 GB reproduce exactly before the six `update-tlmgr-r*` files are dropped; the adopted stored set is 496,149 / 132.99 GB. Its 20.9 GB release day reproduces as 20.94. The worst-day
+The stored set is 496,149 objects and 132.99 GB; the 2026-03-01 release day is 20.94 GB.
+The worst-day
 figures count files carrying that mtime in today's listing, so they are a floor for what
 was fetched that day (files since replaced do not appear).
 
@@ -392,8 +393,8 @@ guard:
     - awk -F'\t' -v max={{.MAX_OBJECT_BYTES}} '$2 > max {print "GUARD: " $1 " is " $2 " bytes, larger than the runner can stage"; f=1} END{exit f}' {{.RUN}}/upstream.txt
 ```
 
-Variables: `CEILING_OBJECTS: 650000`, `CEILING_GB: 175` (the base plan's ceiling: 133 GB
-plus a release day plus a year of growth, $2.48/month at the ceiling), `MAX_OBJECT_BYTES:
+Variables: `CEILING_OBJECTS: 650000`, `CEILING_GB: 175` (133 GB plus a release
+day plus a year of growth; $2.48/month at the ceiling, cost-estimates.md), `MAX_OBJECT_BYTES:
 12000000000` (the 14 GB runner disk less headroom; the largest object today is 6.87 GB).
 The ceiling is a bound on the **mirror total**, not on the delta: on 2026-03-01 the delta
 was 20.94 GB and the total went from ~112 GB to ~133 GB, which passes. A ceiling on the
@@ -419,7 +420,7 @@ present (root, 186 bytes, touched hourly), and the count must be at least 90% of
 (446,534 against a 496,149-line state). The 90% figure allows the largest plausible real
 shrink (the 24,611 alias copies of a directory symlink being removed upstream is 5%). If
 the guard fires on a real change, raise the state by hand: `aws s3 rm` the state file and
-let the next hour reseed, or edit the threshold in a PR. Belt and braces: `deleted.txt`
+let the next run reseed, or edit the threshold in a PR. Belt and braces: `deleted.txt`
 over 10% of the state fails the deletion step (errors-and-issues.md).
 
 ## 5. Trust boundaries and threat model
@@ -523,8 +524,8 @@ vulnerability reporting with `SECURITY.md` linking to it, `permissions: contents
 
 **Changes.**
 
-- `SECURITY.md` "What this mirror guarantees" becomes section 9 below, word for word. The
-  base plan's line "SECURITY.md states that only tlnet is signed" is wrong: tlcontrib, the
+- `SECURITY.md` "What this mirror guarantees" becomes section 9 below, word for word. Saying
+  "only tlnet is signed" would be wrong: tlcontrib, the
   ISO checksums, MiKTeX's rpm and deb metadata and a few hundred package files are signed
   too, and the page must say which of those the mirror checks (tlnet, tlcontrib, ISO) and
   which it does not (the rest), or a reader will assume the wrong thing in both directions.
@@ -550,7 +551,8 @@ vulnerability reporting with `SECURITY.md` linking to it, `permissions: contents
 
 For `README.md` and `SECURITY.md`:
 
-> **What this mirror promises.** Every hour, before anything is published:
+> **What this mirror promises.** On every run (scheduled hourly; starts drift, see
+> monitoring.md), before anything is published:
 >
 > - `systems/texlive/tlnet/`, the repository `tlmgr` and `install-tl` use, is verified.
 >   `texlive.tlpdb` is checked against its SHA-512 and its GPG signature with the TeX Live
@@ -579,20 +581,7 @@ For `README.md` and `SECURITY.md`:
 > that names them, so a `tlmgr` run that overlaps a publish can see a checksum error; run
 > it again.
 
-## 10. Where this differs from the base plan
-
-| Base plan | Here | Why |
-|---|---|---|
-| "the container checksum of every container in the delta" is checked per batch | the tlpdb is fetched and verified first (`manifest`), containers are checked against it, `tlpkg/` is uploaded last and `cmp`'d against the manifest | without it, a batch has no current tlpdb; the old one names the old checksum and every real update fails |
-| "every container the tlpdb names exists" is checked "against the upstream listing" | checked against state plus delta minus deletions | the promise is about the bucket, not dante; a lost upload or a same-hour upstream deletion is caught only this way |
-| `verify` "gains only a symlink-inflation guard" | gains the guard, a listing floor, a `timestamp` presence check, the checksum-diff for unlisted changes, the tlcontrib pin, the ISO hash, and the days-to-expiry line | each is a few lines and closes a hole named above; none adds a tool |
-| "SECURITY.md states that only tlnet is signed" | states exactly which signed indexes are verified and which are not | four other signed things exist; the survey table is the evidence |
-| Threat model unstated | section 5 | |
-| `guard` on `du` | `guard` on the listing totals, before any fetch, plus a short-listing floor | the base plan proposed the first; the floor is the full-mirror form of today's `test -s local.txt` |
-| 496,155 objects, 133.01 GB, 20.9 GB release day, 2027-07-13 expiry | reproduced, then the six `update-tlmgr-r*` files dropped: 496,149 / 132.99 GB / 20.94 GB / 2027-07-13 (320 days) | recomputed from the listing and the keyring; pin and expiry confirmed on tug.org |
-| Secrets: two Cloudflare secrets added | same | |
-
-## 11. Open questions
+## 10. Open questions
 
 - Whether pinning `TLCONTRIB_KEY` is worth the second rotation. The alternative is to copy
   tlcontrib as-is like MacTeX; tlmgr verifies on the client either way. Decided "verify"
@@ -619,7 +608,7 @@ For `README.md` and `SECURITY.md`:
   Belongs to monitoring.md: the days-to-expiry and silent-change lines in `report`.
   Belongs to official-mirror-and-url.md: which `index.html` is served at the root.
 
-## 12. Sources
+## 11. Sources
 
 Fetched 2026-08-26:
 

@@ -48,7 +48,8 @@ the body (section 3). "Note" means a job-summary row or a `::warning::` annotati
 | Cost | Class B month-to-date, last 24 h | same | `usage` (deferred) | see section 8 | note / health (deferred); never fails a run |
 | Cost | Cache hit ratio, last 24 h | `httpRequestsAdaptiveGroups` by cache status (field unverified, section 2.4); only meaningful with `CACHE=on` | `usage` (deferred) | < 70 % note; < 40 % two runs health | note / health (deferred) |
 | Cost | Pending multipart uploads | `uploadCount` | `usage` (deferred) | > 0 for 24 h | note |
-| Liveness | Are runs happening? | healthchecks `sync` check, cron schedule, grace 2 h | `ping` | no ping for period+grace | email from healthchecks |
+| Liveness | Are runs happening? | healthchecks `sync` check, cron schedule, grace 3 h | `ping` | no ping by slot + 3 h (absorbs a 45-minute late start, a 55-minute run and one dropped slot) | email from healthchecks |
+| Liveness | How late did the run start? | start − cron slot, minutes | `report` | > 45 note; never alerts | note; in the ping body and `history.csv` |
 | Liveness | Are runs succeeding? | `/fail` ping with the run URL | workflow `if: failure()` | any | email from healthchecks (and GitHub, section 9) |
 | Liveness | Duration trend | `/start` then success; healthchecks shows run time | `ping` | start without success within grace | email from healthchecks |
 | Liveness | Is the reconcile happening? | healthchecks `reconcile` check, period 1 d, grace 12 h | reconcile | missed | email from healthchecks |
@@ -90,13 +91,16 @@ will feed the `health` check at 28 h (mirmon's "oldish" boundary, section 6) onc
 exists; until then it is a `::warning::` at the same line.
 
 Upstream's own movement is a job-summary row only ("dante's timestamp: 2026-08-26 17:02:01",
-from the listing). It never alerts: tlnet goes quiet for weeks before a release and CTAN as a
-whole had an 86-hour gap with no file change (2026-01-20 06:00 to 01-23 20:00, from the
-listing; next longest 55 h). Alerting on upstream silence would page for nothing.
+from the listing). It never alerts: tlnet goes quiet for weeks before a release, only 275 of
+the last 720 hour-slots had at least one changed file (the four generated root files
+excluded), and CTAN as a whole had an 86-hour gap with no file change (2026-01-20 06:00 to
+01-23 20:00, from the listing; next longest 55 h). Alerting on upstream silence would page
+for nothing.
 
 ### 2.2 Completeness
 
-Three layers, cheapest first.
+The stored set is 496,149 objects, 132.99 GB, 268 KB average (`cost-estimates.md`). Three
+layers, cheapest first.
 
 1. In `publish`, per batch: the number of `upload:` lines `aws s3 cp --recursive` prints
    equals the number of files rsync put in `staging/` (`find staging -type f | wc -l`). A
@@ -142,8 +146,8 @@ POST with `{"query": ..., "variables": ...}` and `Authorization: Bearer $CF_API_
 Token scopes. The R2 datasets are account-scoped: `Account → Account Analytics → Read` (the
 analytics token guide). The zone HTTP dataset is zone-scoped: `Zone → Analytics → Read`
 (listed as "Analytics Read" in the permissions reference; the GraphQL errors page says a 403
-means the token lacks "Analytics: Read" for the resource). The base plan's token had only the
-account scope; it needs both. Restrict the zone scope to `ijosh.com`.
+means the token lacks "Analytics: Read" for the resource). The token needs both. Restrict the
+zone scope to `ijosh.com`.
 
 Limits. 300 GraphQL queries per 5-minute window per user (GraphQL limits page); the general
 API page says "Max 320/5 min" for GraphQL and 1,200 requests per 5 minutes for the token
@@ -196,7 +200,7 @@ GetBucketLocation GetBucketCors GetBucketLifecycleConfiguration`; free is `Delet
 DeleteBucket AbortMultipartUpload`. Unverified: that the dataset's `actionType` strings are
 these names (the metrics page does not enumerate them). `usage` sums the three known lists
 and prints every name it did not recognise under "other"; the first run shows the real
-vocabulary and the lists get corrected once. Also unverified: that reads served through the
+vocabulary and the lists are adjusted once. Also unverified: that reads served through the
 custom domain on a cache miss appear here as `GetObject`. They are billed as Class B, so they
 should; test by fetching an uncached key 50 times and re-running the query an hour later.
 
@@ -231,7 +235,9 @@ interval is not documented; `limit: 48` covers half-hourly.
 is unverified**: no documentation page fetched today names the cache-status field of
 `httpRequestsAdaptiveGroups` (the Zone Analytics migration guide shows `cachedRequests` and
 `cachedBytes` only on the older `httpRequests1mGroups`). Treat this whole query as
-"to be confirmed by introspection" before it goes in the Taskfile.
+"to be confirmed by introspection" before it goes in the Taskfile. On a Free zone the
+dashboard offers no cache-status view at all (Cache Analytics is Pro and above), so this
+query is the only way to see the hit ratio.
 
 ```graphql
 query ($z: string!, $host: string, $day: Time, $now: Time) {
@@ -274,8 +280,14 @@ healthchecks.io, section 3. Three facts about GitHub's schedule shape the settin
 loads ... High load times include the start of every hour. If the load is sufficiently high
 enough, some queued jobs may be dropped"; scheduled workflows run only from the default
 branch; and "in a public repository, scheduled workflows are automatically disabled when no
-repository activity has occurred in 60 days". The drift's magnitude is not documented. Measure
-it from the run history once the hourly schedule is live:
+repository activity has occurred in 60 days". The delay is not documented but it is
+observed in this repository: the one scheduled `sync` run in the history so far (cron
+`30 3 * * *`) was created at 04:09:16 UTC on 2026-08-26, 39 minutes after its slot, and the
+next day's run was 18 minutes late and not yet started at the time of writing. Lateness of 15
+to 45 minutes is normal and a dropped slot is possible; nothing in this file assumes a run
+starts at its cron minute. There is no fix inside the constraints, so the design absorbs it:
+the `sync` grace (section 3), a lateness figure in every run line, and mirmon's 28-hour band.
+Keep measuring it from the run history once the hourly schedule is live:
 
 ```sh
 gh run list -R jshvn/ctan -w sync.yml -e schedule -L 200 --json createdAt \
@@ -284,6 +296,16 @@ gh run list -R jshvn/ctan -w sync.yml -e schedule -L 200 --json createdAt \
 
 Duration is measured by healthchecks from the `/start` ping to the success ping (shown when
 the two are under 72 h apart) and recorded in `history.csv` from the runner's own clock.
+Lateness is measured by `report` as the start time minus the most recent cron slot, from the
+cron minute in the workflow file and `date -u`; it is `-` for `workflow_dispatch` runs:
+
+```sh
+# M is the cron minute from .github/workflows/sync.yml; start is the job's own clock at the head of sync
+test "$GITHUB_EVENT_NAME" = schedule || { echo 'late=-'; exit 0; }
+slot=$(date -u -d "$(date -u -d @$start +%Y-%m-%dT%H):$M:00Z" +%s)
+test "$slot" -le "$start" || slot=$((slot - 3600))
+echo "late=$(( (start - slot) / 60 ))"
+```
 
 ### 2.6 Platform health
 
@@ -352,21 +374,37 @@ ping returns 200 and is not recorded. This design sends at most 2 per check per 
 
 | Slug | Schedule | Grace | Pinged by | Body |
 |---|---|---|---|---|
-| `sync` | cron `M * * * *`, timezone UTC (the workflow's minute) | 2 h | `/start` at the head of `sync`; success from `ping`; `/fail` from the workflow's failure step | success: the run line (below); fail: run URL and which `RUN/` files exist |
+| `sync` | cron `M * * * *`, timezone UTC (the workflow's minute) | 3 h | `/start` at the head of `sync`; success from `ping`; `/fail` from the workflow's failure step | success: the run line (below); fail: run URL and which `RUN/` files exist |
 | `reconcile` | simple, period 1 d | 12 h | success at the end of a completed reconcile | counts: missing, wrong-size, unknown, objects, GB |
 | `health` (deferred, with `usage`) | simple, period 1 d | 1 d | every run: success when every section-8 threshold and the mirmon age pass, `/fail` otherwise | the failing signals, one per line |
 
 Why these settings:
 
-- **Grace 2 h on `sync`.** healthchecks marks a cron check late when the expected ping does
-  not arrive, and down after grace. GitHub may delay or drop a scheduled run; one dropped run
-  leaves the mirror two hours stale, well inside mirmon's 28-hour "fresh" bound, and is not
-  worth an email. Grace of 2 h plus the next run's own drift means a single dropped run is
-  silent and two in a row alert. The `/start` signal makes grace also the maximum run
-  duration ("Healthchecks.io will detect if the job runs longer than its configured grace
-  time"), which fits `timeout-minutes: 55` on the hourly run. A run that hangs to its
-  timeout produces the same `/fail` as any other failure.
-- **The seed.** A 6-hour job would trip the 2-hour grace after `/start`. Pause the `sync`
+- **Cron schedule, grace 3 h on `sync`.** healthchecks expects a ping at each cron match
+  (the next slot after the last ping), marks the check late when it does not arrive, and
+  down after grace. Scheduled runs start late (section 2.5: 39 minutes observed, 15 to 45
+  normal) and a slot can be dropped, and neither is worth an email. The arithmetic, with T0
+  the slot that is dropped: the run at T0 + 60 starts up to 45 minutes late, at T0 + 105,
+  and runs for D minutes, at most 55 (`timeout-minutes`), so its success ping lands by
+  T0 + 160. The ping expected at T0 must therefore be allowed 160 minutes; grace is 3 h
+  (180 minutes), which leaves 20 minutes for the healthchecks clock and curl's retries. Two
+  dropped slots in a row, or one dropped slot and a run late by more than 65 minutes, page;
+  everything below that is silent. Worst-case time to alert for a genuine stall (no run at
+  all, the only case the grace governs, since a failing run pings `/fail` at once): the last
+  success could have arrived up to 45 + 55 minutes after its own slot, the next slot is
+  expected, and down fires 3 h after that slot, so the alert comes between 3 h and 4 h 40 min
+  after the last successful run and at most 4 h after the last slot that should have run.
+  The mirror is then at most about 5 h stale, well inside mirmon's 28-hour "fresh" band (a
+  full day plus 4 h), which is what absorbs the lateness on CTAN's side. `/start` means
+  "the job started", and the job starts when GitHub runs it, not at the slot; healthchecks
+  measures the run's duration from that moment and knows nothing about the slot. Under
+  `/start`, grace is also the longest allowed run ("Healthchecks.io will detect if the job
+  runs longer than its configured grace time"): 3 h against a 55-minute timeout. A run that
+  hangs to its timeout produces the same `/fail` as any other failure. The lateness itself
+  is computed by `report` (section 2.5) and travels as `late=<minutes>` in the ping body and
+  `history.csv`, so the trend is readable in healthchecks' last two days and in the CSV for
+  a year; over 45 minutes it is a `::warning::`, and it never alerts.
+- **The seed.** A 6-hour job would trip the 3-hour grace after `/start`. Pause the `sync`
   check in the UI before dispatching the seed (`seeding-and-migration.md`); a paused check
   leaves the paused state on its next ping unless "Ignore the ping, stay in the paused state"
   was ticked, so the first successful hourly run after the seed resumes monitoring with no
@@ -438,7 +476,7 @@ task" becomes "run one task, and `task fail` if it failed"):
 `history.csv`):
 
 ```
-2026-08-27T01:17:04Z run=17435291 dur=38 age=412 upstream=496152 added=3 changed=11 deleted=1 uploaded=15 purged=0 batches=1 storage_gb=132.99 objects=496151 classA_mtd=- classB_mtd=- classA_24h=- classB_24h=- hit_24h=- mirmon=1h/fresh reconcile=-
+2026-08-27T01:56:04Z run=17435291 late=39 dur=38 age=412 upstream=496152 added=3 changed=11 deleted=1 uploaded=15 purged=0 batches=1 storage_gb=132.99 objects=496151 classA_mtd=- classB_mtd=- classA_24h=- classB_24h=- hit_24h=- mirmon=1h/fresh reconcile=-
 ```
 
 The five `usage` fields are `-` until that step exists, and `purged` is 0 while `CACHE` is
@@ -481,7 +519,7 @@ the file's producer is named so a blank cell points at the step that did not run
 | Read-back | age, alias copy, sampled keys, cache statuses, 404, big-object HEADs, one word each | `RUN/smoke.txt` |
 | Mirmon | "not listed" or age and colour as CTAN shows it | `RUN/mirmon.txt` |
 | Platform | days since last commit of 60; runner tool versions | `git log`, the version line |
-| Run | duration, runner peak disk (`df` after the largest batch) | `RUN/timing.txt` |
+| Run | started N min after the cron slot (`-` for dispatch); duration; runner peak disk (`df` after the largest batch) | `RUN/timing.txt` |
 
 `<details>`: the rsync `--stats` block of the largest batch, and the first 20 lines of
 `changed` and `deleted` (the top of the sorted list, which is alphabetical, not the most
@@ -489,7 +527,7 @@ interesting; still enough to recognise a release day).
 
 Warnings go through `::warning::` annotations, which render on the run page and in the
 Actions list without opening the log. `report` writes them for: days since commit > 45,
-reconcile counts > 100, mirmon age > 4 h (and > 28 h, until `health` exists), and, once
+a start more than 45 minutes after its slot, reconcile counts > 100, mirmon age > 4 h (and > 28 h, until `health` exists), and, once
 `usage` exists, the budget "note" thresholds (section 8) and `usage` unavailable.
 
 **Persistent history: comparison and choice.**
@@ -673,7 +711,7 @@ hourly run is at most ~25 `PutObject`. Storage past the ceiling is prevented bef
 the post-hoc storage number from analytics goes to `health`. The net effect: one email at the
 transition, the mirror keeps running, the human decides.
 
-**Thresholds.** Baselines from `cost-estimates.md` and the base plan: ~34k Class A a month
+**Thresholds.** Baselines from `cost-estimates.md`: ~34k Class A a month
 (hourly runs plus the daily reconcile's 497 listings), ~720 state reads and negligible Class B
 from the pipeline; 133 GB stored, ceiling 175 GB; a full seed is ~500k Class A in its month.
 
@@ -682,7 +720,7 @@ from the pipeline; 133 GB stored, ceiling 175 GB; a full seed is ~500k Class A i
 | Storage, max(payload+metadata) | last 24 h | > 150 GB | > 175 GB | ceiling; 132.99 GB today (`cost-estimates.md`) |
 | Class A | month-to-date | > 500,000 | > 900,000 | 1M free; a seed month sits at the note line by design |
 | Class A | last 24 h | > 50,000 | > 250,000 | normal day ≈ 24 × 25 + 497 + 24 ≈ 1,100; a re-seed is 496k |
-| Class B | month-to-date | > 5,000,000 | > 8,000,000 | 10M free; the base plan's number kept |
+| Class B | month-to-date | > 5,000,000 | > 8,000,000 | 10M free |
 | Class B | last 24 h | > 300,000 | > 1,000,000 | 333k/day is the free-tier pace; 1M/day is a $7/month pace and the "cache is off" signature |
 | Hit ratio, cacheable paths (`CACHE=on` only) | last 24 h, only when requests ≥ 1,000 | < 70 % | < 40 % on two consecutive runs | below 1,000 requests the ratio is noise; with `CACHE=off` the row is skipped |
 | Pending multipart uploads | latest snapshot | > 0 for > 24 h | never | parts are invisible otherwise |
@@ -727,7 +765,7 @@ hourly reminder on.
 |---|---|---|
 | Emails for a day-long outage | 24 | 2 (plus optional reminders) |
 | Link to the log | direct | via the run URL in the body |
-| Catches a run that never starts | no | yes (late, then down) |
+| Catches a run that never starts | no | yes (late, then down 3 h after the slot) |
 | Catches a hung run | at timeout, as a failure | at grace, same |
 | Works when healthchecks is down | yes | no |
 | Works when GitHub email is off | no | yes |
@@ -739,8 +777,8 @@ rather than off, because it is the only channel that fires when healthchecks its
 unreachable from the runner (`ping` retries, then fails the run). The cost is the 24-email day
 when dante is down. If that ever happens twice, turn the GitHub setting off; the pipeline
 keeps working either way, since `ping` fails the run on a healthchecks outage and that
-failure is visible on the Actions page and the README badge even without email. This is the
-base plan's open question answered: route through healthchecks, keep GitHub as backstop.
+failure is visible on the Actions page and the README badge even without email. Route through
+healthchecks, keep GitHub as backstop.
 
 ## 10. Dashboard
 
@@ -769,66 +807,7 @@ Nothing to build. Four pages and one file, with what to look at and how often.
 | Dependabot PRs | the repository's pull requests | merged, so the 60-day clock keeps resetting |
 | Expiries | `CF_API_TOKEN` (no TTL, or its date); TL subkey 2027-07-13 | 30 days' notice |
 
-## 11. Where this differs from the base plan
-
-- **Scope adopted by the set.** The GraphQL `usage` step and the `health` check are deferred
-  (they need `jq`); the base plan's "ops budget in `report`" does not exist yet, and until
-  it does the R2 metrics tab is the budget check. The edge cache is off by default
-  (`CACHE: off`), so the base plan's purge and `cf-cache-status` guards are conditional on
-  `CACHE=on`; with it off, `smoke` proves correctness by `cmp` plus `Content-Length` and
-  asserts that nothing is `HIT`. `.state/` and `.site/` are excluded from every sampled key.
-- **No `curl | cmp`.** Every read-back downloads to a file under `RUN/` and compares the
-  file, including today's tlpdb check, because a retried `curl` after partial output would
-  corrupt a pipe (`errors-and-issues.md`).
-- **Checks.** The base plan proposed one hourly check with a 2-hour grace and floated a
-  second one pinged by `smoke`. This file has two now, `sync` (with `/start` and `/fail`) and
-  `reconcile`, and a third, `health`, deferred with `usage`. The smoke-only check is dropped
-  as redundant: a failed `smoke` fails the run and `sync` already reports that. `reconcile`
-  and `health` observe things a green `sync` cannot.
-- **Budget breaches never fail the run.** The base plan had `report` fail the run at 8M
-  Class B or the storage ceiling. Failing the run cannot reduce Class B and stales the
-  mirror; here the pre-upload `guard` keeps failing the run for storage, and every other
-  breach signals `health` once it exists, and nothing until then. The base plan's 8M number
-  is kept as the `health` line and a 24-hour row is added, which catches a broken cache the
-  same day instead of weeks later.
-- **History.** The base plan used the healthchecks log (100 entries) as the age history.
-  With `/start` that is about two days; the long record is `.state/history.csv` in the
-  bucket, two operations a run.
-- **Token scopes.** The zone HTTP dataset needs `Zone → Analytics → Read` in addition to the
-  base plan's `Account → Account Analytics → Read`.
-- **`cacheStatus` is unverified.** The base plan stated the field as fact; no documentation
-  page fetched today names it on `httpRequestsAdaptiveGroups`. Section 2.4 gives the
-  introspection calls that confirm or refute it before the query enters the Taskfile. On a
-  Free zone the dashboard offers no cache-status view at all (Cache Analytics is Pro+), so
-  GraphQL is the only route.
-- **`actionType` vocabulary is unverified** and handled by an "other" bucket rather than
-  assumed.
-- **Mirmon's probe target.** The base plan said the probe was "observed via
-  `https://mirror.ctan.org/timestamp`"; that URL is the redirector (307 to
-  `mirror.clarkson.edu` today), and mirmon probes each mirror's own `/timestamp`. The
-  first-word-is-an-epoch format is stated by the manual, not observed today.
-- **GraphQL limit.** The base plan cited 300 per 5 minutes; the GraphQL limits page still
-  says 300 and the general API limits page says "Max 320/5 min". Both are far above three an
-  hour.
-- **Schedule disable.** Added a direct measure (`days since last commit`) with a warning at
-  45; the base plan relied on healthchecks catching the outage afterwards.
-- **`smoke`.** Adds the `Age` rule on the first GET (a `HIT` is not by itself proof the purge
-  failed), the 404 for a deleted key, and HEADs on the five multipart objects with a
-  `content-length` equality. Notes that sampled keys must be copied aside before `staging/`
-  is emptied per batch, which the base plan's "three keys from the upload list" glossed over.
-- **Tools and workflow.** The workflow gains an `if: failure()` step for `/fail`, a named
-  constraint change. `jq` is *not* added; that is what defers `usage`.
-- **Numbers.** Stored set 496,149 objects, 132.99 GB and 268 KB average object, per
-  `cost-estimates.md` (the base plan's 496,155 / 133.01 GB / 244 KB; this file's own raw
-  count of the listing gives the base plan's object figure, six higher, and
-  `cost-estimates.md` is authoritative). Hour-slots with at least one change in the last 30
-  days: 275 of 720 (base plan: 283; the difference is the exclusion of the four generated
-  root files). Longest gap with no change in 365 days: 86 h; this is why no "upstream quiet"
-  alert exists.
-- **Usage notifications.** The base plan said "Pro and above"; the docs add "Pay-as-you-go
-  accounts only". Same conclusion.
-
-## 12. Open questions
+## 11. Open questions
 
 - Is `cacheStatus` (and `edgeResponseStatus`) a dimension of `httpRequestsAdaptiveGroups` on a
   Free zone, and what are that node's `notOlderThan` and `maxDuration` there? One Settings
@@ -844,6 +823,8 @@ Nothing to build. Four pages and one file, with what to look at and how often.
 - Does GitHub keep workflow-run metadata (conclusion, timestamps) beyond the 90-day log
   retention? Only matters if `history.csv` is rejected.
 - Whether the owner wants GitHub's account-wide Actions email off, given other repositories.
+- Whether an off-peak cron minute (not :00 to :05) reduces the lateness; unverified, and the
+  `late=` column in `history.csv` is the measurement once the hourly schedule runs.
 - Whether `health`, once it exists, should be paused during a re-seed or the two seed-month
   emails accepted.
 - What un-defers `usage`: adding `jq` to the tools line is the only cost; the queries and
@@ -856,7 +837,7 @@ Nothing to build. Four pages and one file, with what to look at and how often.
   `usage.txt`, `breaches.txt`, `smoke.txt`, `mirmon.txt`, `sample/`), and whether `usage`
   and `health` are separate tasks or folded into `report` and `ping`.
 
-## 13. Sources
+## 12. Sources
 
 Fetched 2026-08-26/27.
 

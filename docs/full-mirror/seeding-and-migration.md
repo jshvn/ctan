@@ -11,15 +11,16 @@ or from the two `sync.yml` runs whose logs were read today. Anything else is mar
 - Six pull requests, in this order: hardening, list-diff on tlnet only, hourly schedule,
   multipart, the expansion to all of CTAN, registration docs. Each leaves the live tlnet
   mirror green. The cache-rule PR (`caching.md`) goes after the seed, not before.
-- The seed is not a procedure. It is the first hourly runs after the expansion PR merges,
-  each doing at most `MAX_BATCHES` batches and exiting cleanly with a report. Delta:
+- The seed is not a procedure. It is an ordinary run whose delta is the whole tree:
   **479,175 objects, 126.21 GB, 30 batches** (24 packed at 4 GB, 5 lone installers,
   `timestamp` last). The 16,974 tlnet keys are never re-uploaded: the state file already
-  holds them.
-- Duration: 67 minutes of runner time at the fast rates seen today, 274 at the slow ones.
-  With `MAX_BATCHES=4` per hourly run the seed takes **8 hourly runs, P50 9 h, P90 11 h**
-  wall clock, and no run comes near the 350-minute timeout. A `workflow_dispatch` input
-  can raise the batch count and finish in one or two runs; it is optional.
+  holds them. Every run does at most `MAX_BATCHES` batches and exits cleanly with a report.
+- Duration: 67 minutes of runner time at the fast rates seen today, 280 at the slow ones.
+  Recommended: one `workflow_dispatch` with `max_batches: 30`, which starts the moment it
+  is clicked and finishes in **1.2 to 4.8 h**, under the 350-minute timeout. The hourly
+  runs (`MAX_BATCHES=4`) are the resume path for anything it leaves; left to them alone the
+  seed is 8 runs, **P50 8 to 9 h, P90 10 to 11 h**, because scheduled runs start 15 to 45
+  minutes after their slot and a slot can be dropped.
 - Seed month: ~513k Class A (free tier 1M), storage prorated to ~$0.97, then $1.84/month.
 - No move of existing keys. `.state/` and `.site/` are the two keys outside CTAN's own
   paths and every listing step excludes them. CTAN ships its own root `index.html`; the
@@ -42,6 +43,8 @@ or from the two `sync.yml` runs whose logs were read today. Anything else is mar
 | `aws s3 sync` with nothing to do | 14 s for 14,872 `archive/` keys, 15 s for the rest; `aws s3 ls --recursive` of 17k keys 14 s | run 32997802111 |
 | Runner | 6 h per job on GitHub-hosted runners | docs.github.com/en/actions/reference/limits |
 | Concurrency | default `queue: single`: "at most one job or workflow run can be pending in the concurrency group"; FIFO; `queue: max` allows 100 | docs.github.com control-workflow-concurrency |
+| Cron lateness | the one scheduled run so far (slot 03:30) was created 04:09:16 UTC on 2026-08-26, 39 min late; on 2026-08-27 the 03:30 slot had not started at 03:51:34 UTC. "The `schedule` event can be delayed during periods of high loads"; "High load times include the start of every hour. If the load is sufficiently high enough, some queued jobs may be dropped." | `gh run list --workflow sync.yml --event schedule --json createdAt`; docs.github.com events-that-trigger-workflows |
+| Dispatch start | every `workflow_dispatch` run today was created at the click (seven runs, 04:54 to 18:05 UTC) | same `gh run list` |
 
 The 05:15 run is the slow end of dante, the 18:05 run the fast end, on the same day and the
 same runner class. Both rates are used below; a single figure would be false precision.
@@ -61,7 +64,7 @@ same runner class. Both rates are used below; a single figure would be false pre
 
 The cache-rule and purge PR from `caching.md` lands between 5 and 6, after the seed has
 finished. Before the seed it would purge 479k URLs nobody has ever requested (4,792 calls,
-~25 min of runner time per the base plan's rate) for no effect.
+~25 min at the ~3 calls/s the purge loop holds itself to, `caching.md`) for no effect.
 
 The question the caller asked: does list-diff land before the storage-set expansion? Yes,
 exactly that, as PR 2 against PR 5. PR 2 runs the new pipeline on the 16,974 keys that are
@@ -96,14 +99,14 @@ What changes: `aws.config` gains `retry_mode = standard`, `max_attempts = 10`,
 `cli_connect_timeout = 60`, `cli_read_timeout = 300` (`standard`, not `adaptive`: adaptive
 is documented as experimental, its token bucket is process-wide, and R2 publishes no
 per-bucket rate to adapt to; `errors-and-issues.md`); `Taskfile.yml` gains the `CURL`
-variable and the `retry` task from the base plan, and the two rsync lines and the three
+variable and the `retry` task (`errors-and-issues.md`), and the two rsync lines and the three
 curl lines use them. No task's inputs or outputs change.
 
 Must not change: `SOURCE`, `PREFIX`, `BUCKET`, the `publish` order, `verify`, `stale`.
 
 Verified before merge: `task --dry sync` renders; the `retry` loop is run under Task with
-`CMD='exit 5'` scaled down (the base plan did this: exit 5 twice then 0 succeeds, exit 23
-fails at once, permanent 5 gives up after five). `task smoke URL=file:///<dir>
+`CMD='exit 5'` and the sleeps scaled down; three cases must hold: exit 5 twice then 0
+succeeds, exit 23 fails at once, a permanent 5 gives up after five. `task smoke URL=file:///<dir>
 STAGING=<dir>` still passes with the `CURL` variable.
 
 Verified after merge: the next 03:30 run's `report` is identical in shape; the rsync stats
@@ -127,7 +130,7 @@ What changes in `Taskfile.yml`:
   (`taskfile-architecture.md` shows the failure). Key-first is what lets the same file carry
   over into PR 5 unchanged.
 - `list` (new): `rsync -rL --list-only {{.RSYNC_TIMEOUTS}} {{.SOURCE}}` through `retry`,
-  normalised by the `norm.awk` from the base plan (anchors on the date column, so blank
+  normalised by `norm.awk` (`taskfile-architecture.md`; it anchors on the date column, so blank
   sizes and any byte in a name parse), versioned containers and `update-tlmgr-r*` dropped
   with the same two patterns `fetch` uses today, paths prefixed with `{{.PREFIX}}/`,
   `LC_ALL=C sort` into `RUN/upstream.txt`.
@@ -143,8 +146,7 @@ What changes in `Taskfile.yml`:
 - `fetch` becomes per-batch: `rsync -rLt {{.RSYNC_TIMEOUTS}} --files-from=RUN/batch-NNNN.txt
   {{.SOURCE}} {{.STAGING}}/` into an emptied `staging/`. No `--delete`, no excludes needed
   (the listing already dropped them; a versioned name never enters a batch).
-- `verify` runs on what is local, as the base plan's "What `verify` means with a delta"
-  describes. In this phase every batch is under tlnet, so the signed checks run whenever
+- `verify` runs on what is local, as `verification-and-security.md` describes. In this phase every batch is under tlnet, so the signed checks run whenever
   `tlpkg/` is in the batch and the container check runs on every `archive/` key present.
 - `publish` becomes per-batch: `aws s3 cp --recursive {{.AWS_FLAGS}} {{.STAGING}}/
   {{.BUCKET}}/` (N PutObject, no listing), then `cat RUN/batch-NNNN.tsv >> RUN/applied.txt`,
@@ -161,8 +163,8 @@ What changes in `Taskfile.yml`:
   state on key and size; mismatches go on the fetch list, unknown keys on the delete list.
   Both lists exclude `^\.state/` and, in this phase, nothing under the prefix is ever
   outside CTAN, so `index.html` at the root is not listed at all (`aws s3 ls --recursive
-  s3://tlnet/systems/texlive/tlnet/` cannot see it). The base plan's `guard` (a `du` of
-  staging) becomes a check on the plan: fail if any single file exceeds the free disk, and
+  s3://tlnet/systems/texlive/tlnet/` cannot see it). `guard` stops being a `du` of staging
+  and becomes a check on the batch plan: fail if any single file exceeds the free disk, and
   fail if the upstream listing's object count or byte total exceeds `LIMIT` (still 10 GB
   in this phase).
 - `report` counts from `RUN/upstream.txt`, `RUN/applied.txt`, the batch files and
@@ -249,8 +251,14 @@ as a Task var with a comment. healthchecks becomes two checks, `sync` (hourly, p
 Must not change: anything in the pipeline's data path.
 
 Verified before merge: `task --dry sync`; the workflow file passes `check.yml`. Verified
-after merge: 24 green runs on the Actions page in a day, each `report` showing a listing
-of ~6.6 s and a delta of tens of keys or zero; the 03:xx run shows the reconcile row.
+after merge: about 24 green runs on the Actions page in a day, each `report` showing a
+listing of ~6.6 s, a delta of tens of keys or zero, and the lateness row (actual start
+minus the slot, computed from the cron minute in the workflow file and `date -u`;
+`taskfile-architecture.md`); the 03:xx run shows the reconcile row. Do not judge the first
+run by the cron minute: it will start 15 to 45 minutes after its slot, as the only
+scheduled run so far did (03:30 slot, created 04:09:16 UTC on 2026-08-26), and a slot may
+be missing. A day with 22 or 23 runs and lateness under an hour on every row is a pass; a
+run that overlaps the next slot shows up as that slot's run starting when it ends.
 
 Rollback: revert the cron line. No bucket state.
 
@@ -311,11 +319,11 @@ What changes:
 - `smoke` adds `/timestamp` read back against staging when `timestamp` was in this run's
   last batch, and a size check by `curl -sI` on three random keys from the run's batches.
 - `verify`: the tlnet checks are unchanged; the "every named container exists" check reads
-  the upstream listing (base plan); a `.tsv` line under `systems/texlive/tlnet/archive/`
-  in a batch is checksummed against the tlpdb only when the tlpdb is local, otherwise
-  against the previous verified tlpdb held in `RUN/` from the state read (the base plan's
-  "A container present upstream and not in the delta is by construction the copy already
-  verified"). Details are `verification-and-security.md`'s.
+  the upstream listing; a `.tsv` line under `systems/texlive/tlnet/archive/` in a batch
+  is checksummed against the tlpdb only when the tlpdb is local, otherwise against the
+  previous verified tlpdb held in `RUN/` from the state read (a container present upstream
+  and absent from the delta is by construction the copy verified when it was uploaded).
+  Details are `verification-and-security.md`'s.
 - `CLAUDE.md`: the constraint "Objects stay under `systems/texlive/tlnet/`" becomes
   "Objects are CTAN's own paths from the bucket root; `.state/` and `.site/` are the only
   keys outside them". "Zero running cost" becomes "storage is the only bill, $1.84/month at
@@ -421,9 +429,11 @@ stored set minus tlnet, plus `timestamp` (which changes hourly and is never in a
 | Lone-file batches | 5: `MacTeX.pkg`, `mactex-20260324.pkg` (6,865,013,189 B), `texlive.iso`, `texlive2026.iso`, `texlive2026-20260301.iso` (6,784,798,720 B) | `awk -F'\t' '$2 > 5237247590' applied.txt` |
 | State file after the seed | 496,149 lines, 37.7 MB text, 3.1 MB `.xz` | `xz -6 \| wc -c` |
 
-The base plan's 496,155 / 133.01 GB counted the six `update-tlmgr-r79982.*` files that
-`fetch` excludes today; the corrected stored set is 496,149 / 132.99 GB. Its "~34 batches"
-counted tlnet's 6.8 GB in the seed; the seed delta is 30 because tlnet is already there.
+The stored set applies both of `fetch`'s excludes, the versioned containers and the six
+`update-tlmgr-r79982.*` files (`-rw-rw-r-- 4785661 ... update-tlmgr-r79982.exe` and its
+five siblings in the listing); with only the first it would be 496,155 / 133.01 GB. The
+seed delta is 30 batches rather than the 32 the whole stored set packs to, because the
+tlnet 6.8 GB is already in the bucket and in the state.
 
 The 30 batches, listing order with the ranks applied, per-batch estimates at the slow
 rates (22.7 MB/s, 57 files/s, 96 PutObject/s) and the fast ones (152 MB/s, 380 files/s,
@@ -467,43 +477,67 @@ run that dies mid-batch (runner lost, 6-hour kill, an rsync exit 23 because dant
 file) leaves the state as of the last completed batch; the interrupted batch repeats in
 full next hour. `PutObject` of the same bytes is idempotent, so nothing is retried unsafely.
 
-With `MAX_BATCHES=4` and `timeout-minutes: 350`: 4 × 46 min at the slow rate is 184 min,
-inside the timeout with room, so no scheduled seed run is ever killed; at the fast rate
-4 batches is 25 to 50 min. A 184-minute run overlaps two or three cron slots, which the
-concurrency rule below turns into one pending run. `MAX_BATCHES=4` makes the seed 8 runs
-(30 / 4, rounded up), the last two of which are fast (lone files and `timestamp`).
+With `MAX_BATCHES=4` and `timeout-minutes: 350`: the first hourly seed run (batches 1
+to 4, the two 90k-file `fonts/` batches among them) is 124 min at the slow rate, inside
+the timeout with room, so no scheduled seed run is ever killed; at the fast rate it is
+33 min, and every later run is under an hour at either rate. A 124-minute run overlaps
+two cron slots, which the concurrency rule below turns into one pending run.
+`MAX_BATCHES=4` makes the seed 8 runs (30 / 4, rounded up), the last two of which are
+fast (lone files and `timestamp`).
+
+Scheduled runs do not start at their slot. The observed lateness in this repository is 15
+to 45 minutes and a slot can be dropped outright (facts table above). This changes no
+mechanism: a late run computes the same delta, and a dropped slot means the next slot's
+run does its work. What it changes is the arithmetic below and the recommendation that
+follows it.
 
 The interaction with the hourly cron during a long run: `concurrency: sync` with the
 default `queue: single`. Verified today on docs.github.com: "By default only one run can
 be pending in a concurrency group; any additional pending runs cancel the previous one",
 and pending runs start "in first-in-first-out order according to the time each one started
 waiting". So if a `workflow_dispatch` seed runs for 5 hours, the 5 hourly runs that fire
-meanwhile collapse to one pending run, which starts the moment the seed job ends. The
-dropped ones lose nothing: every run recomputes the whole delta from the state file. This
-is the behaviour wanted; do not add `queue: max`, which would run the dropped hours one
-after another for no gain.
+meanwhile (each created 15 to 45 minutes after its slot) collapse to one pending run,
+which starts the moment the seed job ends. The dropped ones lose nothing: every run
+recomputes the whole delta from the state file. This is the behaviour wanted; do not add
+`queue: max`, which would run the dropped hours one after another for no gain.
 
 `timeout-minutes`: 350 always, from PR 3 on. GitHub's hard limit is 6 hours per job on
 hosted runners (limits page); 350 sits under it, and a dispatch with `max_batches: 30` at
-the slow rate (274 min) fits. The value is not tied to the input: one number, no
+the slow rate (280 min with the installers' upload) fits. The value is not tied to the input: one number, no
 expression, nothing to trim after the seed.
 
 ### Wall clock
 
-| Scenario | Runner time | Runs | Wall clock |
-|---|---|---|---|
-| Hourly, `MAX_BATCHES=4`, fast rates | 67 min + 8 × ~1 min overhead | 8 | first run at merge + 7 hours: **~8 h** |
-| Hourly, `MAX_BATCHES=4`, slow rates | 274 min | 8; a 184-min run swallows two cron slots, so the next run starts when it ends | **~9 to 11 h** |
-| Dispatch `max_batches=30`, fast | 67 min | 1 | ~1.5 h |
-| Dispatch `max_batches=30`, slow | 274 min | 1 | ~5 h, inside the 350-minute timeout with ~75 min to spare |
+Per-run runner time from the batch table, 4 batches a run (slow / fast, minutes):
+run 1 = 124 / 33, run 2 = 57 / 15, run 3 = 25 / 6, runs 4 to 6 = 13 to 14 / 3 each,
+run 7 (four installers) = 26 / 9, run 8 = 7 / 2, plus ~1 min overhead each; 280 / 67 in
+all. The hourly model: a merge does not trigger a run, so the first run waits for the
+next slot (0 to 60 min, `W`) plus its lateness (`L`, 15 to 45 min); every later run is
+anchored to its own slot plus its own lateness, so lateness does not accumulate across
+runs. Only a run longer than an hour (run 1 at the slow rate) pushes the next start, and
+only a dropped slot costs a whole hour.
 
-P50 about 9 hours from merge to the `timestamp` batch, P90 about 11, if the seed is left
-to the hourly runs. A dispatch finishes the same afternoon. Both are one day; the choice
-is how much attention the day gets.
+| Scenario | Runs | Arithmetic | Wall clock |
+|---|---|---|---|
+| Hourly, fast, P50 | 8 | `W` 30 + 7 slots 420 + `L` 30 + run 8 ~3 | **~8 h** |
+| Hourly, fast, P90 | 8 | `W` 55 + 420 + `L` 45 + one dropped slot 60 + 3 | **~9.7 h** |
+| Hourly, slow, P50 | 8 | `W` 30 + run 1 124 (starts at `L` 30, swallows slots 2 and 3; run 2 starts at once) + runs 2 to 8 anchored to slots 4 to 9 with `L` 30 each ≈ 518 | **~9.1 h** |
+| Hourly, slow, P90 | 8 | as above with `L` 45 and one dropped slot | **~11 h** |
+| Dispatch `max_batches: 30`, fast | 1 | starts at the click; 67 + 5 min overhead | **~1.2 h** |
+| Dispatch `max_batches: 30`, slow | 1 | 280 + 5, under the 350-minute timeout with ~65 min to spare | **~4.8 h** |
+
+The dispatch is the recommended seed. It starts when it is clicked (seven of seven
+dispatches today did), so the day does not depend on eight consecutive slots none of
+which is dropped; it finishes before the afternoon at either rate; it produces one
+`report` to read instead of eight; and the hourly runs that fire meanwhile collapse to one
+pending run that starts when it ends and mops up whatever it left (a batch lost to a
+350-minute kill, the hour's tlnet changes, `timestamp`). Nothing in the design changes
+between the two paths: the same delta, the same batches, the same state file. If the
+dispatch is cut off, the hourly runs finish the seed without anyone doing anything.
 
 ### The `workflow_dispatch` input
 
-Recommended: add it, default it to the hourly value, and use it only on the seed day.
+Add it, default it to the hourly value, and use it on the seed day with `max_batches: 30`.
 
 ```yaml
 on:
@@ -527,10 +561,11 @@ jobs:
 type and default are per the workflow-syntax page ("the default value of the input is 0
 for a number" when unset, so the explicit default matters).
 
-Why not just leave the seed to the hourly runs and skip the input: the hourly path is
-enough and this file recommends it as the baseline. The input exists so the seed day can
-be finished in one sitting while someone watches, and so a future re-seed (a bucket
-rebuilt from scratch, a 200 GB CTAN) does not need a workflow edit. It is four lines.
+Why not leave the seed to the hourly runs and skip the input: they would finish it, in
+8 to 11 hours, and they remain the resume path. But the hourly path's clock is GitHub's
+(a first start up to an hour and three quarters after the merge, a dropped slot an hour
+more), while the dispatch's clock is ours; and a future re-seed (a bucket rebuilt from
+scratch, a 200 GB CTAN) then needs no workflow edit. It is four lines.
 
 ## Seed ordering within the tree
 
@@ -552,8 +587,8 @@ It is 186 bytes and changes every hour at :02, so it is in every delta.
 Should tlnet go first in the seed? In the seed there are no tlnet keys to order: the
 state already holds them and only the hour's tlnet changes appear, ranked 0 and 1 as
 always. The live prefix is therefore refreshed by every seed run exactly as by every
-hourly run. The base plan's concern ("`tlpkg/` in the last batch so the live tlpdb is
-never ahead of `archive/`") holds by construction: within one run, an `archive/` change
+hourly run. The rule that the live tlpdb never runs ahead of `archive/` holds by
+construction: within one run, an `archive/` change
 is in a rank-0 batch and its tlpdb in the rank-4 batch, and across runs the state file is
 never written for a batch that did not land.
 
@@ -570,7 +605,7 @@ and are reported as "no tlnet keys in this delta" otherwise; `smoke` still reads
 | Multipart: 65 parts at 512 MB + 5 create + 5 complete | 75 | A | |
 | State writes: 30 seed batches + 720 hourly | 750 | A | |
 | Daily reconcile listing: 497 pages × 30 | 14,910 | A | |
-| Hourly deltas (base plan's 18k/month at 133 GB) | ~18,000 | A | |
+| Hourly deltas (~3.7% of objects rewritten a month, from the listing's 30-day churn; `cost-estimates.md`) | ~18,000 | A | |
 | **Class A total** | **~513,000** | | **$0** (free tier 1,000,000) |
 | State reads and `smoke` GETs | ~1,500 | B | $0 |
 | Storage, seeded on day 15 of a 30-day month | (14 × 6.8 + 16 × 133) / 30 = 74.1 GB-month, billed as 75 | | (75 − 10) × $0.015 = **$0.97** |
@@ -782,7 +817,8 @@ ceiling: 497 Class A pages at 133 GB, 868 at 200 GB; upgrade: none needed under 
 - Added: "`.state/` and `.site/` are the two keys outside CTAN's paths; every listing
   excludes them";
   "`timestamp` is in the last batch of every run; mirmon drops the mirror at 28 hours";
-  "`MAX_BATCHES` bounds a run to the timeout; the seed is the hourly runs after a merge
+  "`MAX_BATCHES` bounds a run to the timeout; the seed is a dispatch with `max_batches`
+  raised, and the hourly runs resume whatever it leaves, after a merge
   that enlarges the delta".
 - "Verifying a change": the canned checks for `plan`, `reconcile`, `smoke` with
   `timestamp`, and `guard` on a listing.
@@ -815,15 +851,23 @@ Seed day, before the first run with a large delta:
       with room; it is after the 10th of the month, so a redo would not push into a
       second billing month's prorating surprise.
 - [ ] The message to `ctan@ctan.org` was sent at least two days before.
-- [ ] It is morning UTC on a weekday, so the eight runs finish while someone is awake and
-      dante's staff are too.
+- [ ] It is morning UTC on a weekday, so the dispatch finishes while someone is awake and
+      dante's staff are too, and the hourly runs that mop up land the same day.
+- [ ] The last seven days of `report` lateness rows are read: every scheduled run started
+      under 60 minutes after its slot and at most one slot a day was missing. Lateness is
+      judged from that row, never from the cron minute in the workflow file. If a day had
+      two or more dropped slots, still seed by dispatch, and expect the mop-up runs to be
+      late too; it changes nothing else.
+- [ ] The seed is a `workflow_dispatch` with `max_batches: 30`, clicked by hand; the
+      hourly cron is left enabled so its runs queue behind the dispatch and resume it.
 - [ ] The `sync` check on healthchecks.io is paused for the day (`monitoring.md`), so a
       three-hour seed run does not page; the `reconcile` check stays live. Unpause after
       the `timestamp` batch lands.
 - [ ] The Transform Rule will be retargeted to `/.site/index.html` right after PR 5
       merges, before batch 4.
-- [ ] PR 5 is approved with `max_batches` defaulting to 4; the rehearsal will be its first
-      dispatched run with `max_batches: 1` from the merged `main`.
+- [ ] PR 5 is approved with `max_batches` defaulting to 4; the rehearsal is its first
+      dispatched run with `max_batches: 1` from the merged `main`, clicked right after the
+      merge so it runs before the first (late) hourly run does batches 1 to 4 unwatched.
 
 Stop the seed (`gh run cancel`, then revert PR 5 and run the cleanup command) if: a batch
 fails `verify`; `smoke` fails on a sampled key; the reconcile finds unknown keys; a run's
@@ -845,45 +889,6 @@ Registration day:
       upstream moves).
 - [ ] PR 6 merged, so the README the reviewers read is final.
 - [ ] Then the form, then watch mirmon at :03.
-
-## Where this differs from the base plan
-
-- **Stored set** is 496,149 objects, 132.99 GB, not 496,155 / 133.01: the plan's count
-  kept the six `update-tlmgr-r79982.*` files that `fetch` excludes today.
-- **The seed delta** is 479,175 objects, 126.21 GB, 30 batches, not "496,155 lines,
-  133 GB, ~34 batches". The plan's seed re-put tlnet; with PR 2 ahead of PR 5 the state
-  file already holds tlnet and nothing under it is re-uploaded.
-- **The seed is the hourly runs**, bounded by `MAX_BATCHES`, not one 4-to-6-hour run
-  racing the 6-hour cap. The plan's "a cut-off at batch ~30 and a second run" becomes
-  eight clean runs with reports, or one dispatch. A run stopping at its batch limit exits
-  0 and pings; the plan treated the kill as the checkpoint.
-- **Dante is not one speed.** The plan's 22.7 MB/s is the slow run; the same day's 18:05
-  run did 152 MB/s. Both are stated and both bound the estimate (67 to 274 minutes of
-  runner time). The plan's "4 to 6 hours" is inside the slow end.
-- **No pre-seed post to the maintainers' list**: there is no list membership before
-  registration (the register page enrols on registration). The pre-seed note goes to
-  `ctan@ctan.org`.
-- **Dante's load is 126 GB, not 133**: tlnet is already here.
-- **Cache rules and purge come after the seed**, not before. The plan ordered them as
-  step 7 of 12, before the seed; seeding through a purge step spends ~25 minutes purging
-  URLs never served.
-- **`page` changes key in PR 5** rather than going away: CTAN's root `index.html` is in
-  batch 4 and the reconcile would fight a `page` that still wrote `/index.html`, so the
-  landing page moves to `/.site/index.html` and the Transform Rule follows.
-- **`timestamp` is in the last batch** with `tlpkg/`; the plan put `tlpkg/` last and did
-  not place `timestamp`.
-- **Multipart is one `aws.config`** with a 4 GB threshold and 512 MB chunks, 13 parts and
-  15 Class A per installer; the plan mentioned the chunk size as an option.
-- **`retry_mode = standard`**, not the plan's `adaptive`.
-- **`timeout-minutes: 350` permanently**, not "360 for the seed and trimmed afterwards".
-- **A missing state file fails the run** unless `SEED=true`; the plan let an absent state
-  silently mean "seed".
-- **Concurrency semantics are now verified** (`queue: single`, FIFO) rather than assumed;
-  the conclusion matches the plan's.
-- **The rehearsal is `max_batches: 1`**, not a throwaway prefix; the dry-run cost the
-  plan did not estimate is ~$0.13 storage but half the Class A tier.
-- Nowhere else. The plan's consistency model (state written after the batch lands, every
-  write idempotent, the interrupted batch repeats) is kept exactly.
 
 ## Open questions
 
@@ -924,6 +929,11 @@ Registration day:
   https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
   (fetched today; `queue: single` default, FIFO, `queue: max`)
 - https://docs.github.com/en/actions/reference/limits (fetched today; 6 hours per job)
+- https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+  (fetched today; scheduled runs delayed under load, dropped when load is high enough,
+  disabled after 60 days without repository activity)
+- `gh run list --workflow sync.yml --event schedule --json createdAt` (the 03:30 slot of
+  2026-08-26 created at 04:09:16 UTC; no run for the 03:30 slot of 2026-08-27 at 03:51:34 UTC)
 - https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
   (fetched today; `workflow_dispatch` input types and defaults)
 - https://docs.github.com/en/actions/reference/workflows-and-actions/contexts (fetched

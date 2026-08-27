@@ -28,16 +28,16 @@ page and directory redirects (`official-mirror-and-url.md`) and the alert model
 | Cache | `CACHE=off` by default: one bypass rule, no purges; `CACHE=on`: the cache rule, purge of changed and deleted keys only | `caching.md` |
 | Removed tasks | `guard` (replaced by `plan`'s ceilings), `stale` (replaced by `diff` and `reconcile`) | |
 | Kept tasks | `page`, now to `.site/index.html`; CTAN's own `index.html` (10,366 bytes, 2020-03-31) is stored at `/index.html` | `official-mirror-and-url.md` |
-| Workflow | `cron: '41 * * * *'`, `concurrency: sync`, `timeout-minutes: 350` always, inputs `seed`, `reconcile`, `max_batches`, `cache` | |
-| Taskfile length | 393 lines of the 800 budget; parses and dry-renders under Task 3.53.1 | the YAML below, extracted and run with `task --dry --force sync` |
+| Workflow | `cron: '41 * * * *'`, `concurrency` group `sync` with `cancel-in-progress: false`, `timeout-minutes: 350` always, inputs `seed`, `reconcile`, `max_batches`, `cache` | scheduled runs start 15 to 45 minutes after their slot and a slot can be dropped; `report` prints each run's lateness |
+| Taskfile length | 412 lines of the 800 budget; parses and dry-renders under Task 3.53.1 | the YAML below, extracted and run with `task --dry --force sync` |
 
 ## 1. The task graph
 
 `task sync` runs, in this order and nothing in parallel:
 
 ```
-rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping -> page
-                                                                 |
+clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping -> page
+                                                                          |
                                                                  batch (first MAX_BATCHES of RUN/batch-NNNN.txt, in file order):
                                                                    fetch -> verify -> publish -> purge? -> checkpoint
 ```
@@ -49,7 +49,8 @@ Each task, its inputs and outputs, and the rule that fixes its place:
 
 | Task | `desc` | Reads | Writes | Ordering rule |
 |---|---|---|---|---|
-| `rules` | Put the zone's rulesets in place; `PUT` only when the file's sha256 differs from the version on the zone | repo JSON, `CF_*` env | nothing | first: a bad token or JSON fails before anything is fetched (`caching.md`) |
+| `clock` | Record the start and its lateness against the cron slot | `date -u`, `CRON_MINUTE` | `RUN/start.txt`, `RUN/late.txt` | first: everything after it is timed from here |
+| `rules` | Put the zone's rulesets in place; `PUT` only when the file's sha256 differs from the version on the zone | repo JSON, `CF_*` env | nothing | a bad token or JSON fails before anything is fetched (`caching.md`) |
 | `list` | List dante, normalise to `RUN/upstream.txt` | `SOURCE` | `RUN/listing.txt`, `RUN/upstream.txt` | before `state`; refuses a listing under 400k lines |
 | `state` | Fetch `.state/applied.txt.xz` to `RUN/applied.txt`, or decide what a missing one means | `S3`, `SEED`, `RECONCILE` | `RUN/applied.txt` or `RUN/rebuild-now` | before `diff` |
 | `rebuild` | List the bucket and make the state exactly what is there | `S3`, `upstream.txt` | `RUN/bucket.txt`, `applied.txt`, the state object | when `RUN/rebuild-now` exists: a lost state, or the daily reconcile |
@@ -64,7 +65,7 @@ Each task, its inputs and outputs, and the rule that fixes its place:
 | `purge` | Purge the batch's already-known URLs, 100 per call | `B`, `applied.txt` | `RUN/purge.txt` | before `checkpoint`; only with `CACHE=on`; a failed purge is a failed run |
 | `checkpoint` | Rewrite and upload the state; empty staging | `B`, `applied.txt` | `applied.txt`, `.state/applied.txt.xz`, empties `STAGING` | last in the batch: the state never names what did not land |
 | `delete` | `DeleteObjects` 1,000 keys per call, purge, drop from state | `RUN/deleted.txt` | `RUN/publish.txt`, state | after every batch: the tlpdb never names a deleted container |
-| `reconcile` | `rebuild`, then delete keys upstream and the reserved prefixes do not own | `S3`, `upstream.txt` | `RUN/bucket.txt`, state | daily; after `delete` so the listing is of a settled bucket |
+| `reconcile` | `rebuild`, then delete keys upstream and the reserved prefixes do not own | `S3`, `upstream.txt`, `late.txt` | `RUN/bucket.txt`, state | the run whose slot is in hour 03, however late it starts; after `delete` so the listing is of a settled bucket |
 | `smoke` | Read back through the domain | `URL`, `upstream.txt`, `RUN/tl` | nothing | after every write; before `ping` |
 | `report` | Job summary from `RUN` | `RUN/*` | `GITHUB_STEP_SUMMARY` | before `ping`, as today |
 | `ping` | healthchecks | `HEALTHCHECK_URL` | nothing | after `smoke`, before `page` |
@@ -114,11 +115,12 @@ vars:
   STAGING: '{{.ROOT_DIR}}/staging'
   TL: systems/texlive/tlnet                     # the one signed subtree
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC   # tug.org/texlive/verify.html
+  CRON_MINUTE: 41                               # the minute in sync.yml's cron; lint checks they agree
   CEILING_GB: 175                               # refuse to run past this many decimal GB upstream
   BATCH_GB: 4                                   # decimal GB per batch; a file over it is a batch by itself
   MAX_BATCHES: '{{.MAX_BATCHES | default "4"}}' # batches per run; the rest wait for the next hour
   SEED: '{{.SEED | default "false"}}'           # true: a missing state file means an empty bucket
-  RECONCILE: '{{.RECONCILE | default "auto"}}'  # true, false, or auto (hour 03 UTC); true also rebuilds a missing state
+  RECONCILE: '{{.RECONCILE | default "auto"}}'  # true, false, or auto (the run whose slot is in hour 03 UTC); true also rebuilds a missing state
   CACHE: '{{.CACHE | default "off"}}'           # off: one bypass rule, no purges; on: cache rule and purges
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
@@ -133,8 +135,9 @@ tasks:
     cmds: [{task: sync}]
 
   sync:
-    desc: rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping -> page
+    desc: clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping -> page
     cmds:
+      - {task: clock}
       - {task: rules}
       - {task: list}
       - {task: state}
@@ -149,6 +152,18 @@ tasks:
       - {task: report}
       - {task: ping}
       - {task: page}
+
+  clock:
+    desc: Record the run's start (RUN/start.txt) and its lateness against the cron slot (RUN/late.txt)
+    cmds:
+      - mkdir -p {{.RUN}}
+      - date -u +%s > {{.RUN}}/start.txt
+      # Seconds since the last :CRON_MINUTE, and the hour that slot belongs to. Arithmetic on
+      # the epoch only, so it is the same on macOS and Linux. Scheduled runs start 15 to 45
+      # minutes after their slot; a run over an hour late reads as the next slot's.
+      - >-
+        awk -v m={{.CRON_MINUTE}} '{ late = ((int($1 / 60) % 60 - m + 60) % 60) * 60 + $1 % 60;
+          printf "%d %d\n", late, int(($1 - late) / 3600) % 24 }' {{.RUN}}/start.txt > {{.RUN}}/late.txt
 
   rules:
     desc: Put each ruleset in cloudflare/ on the zone, but only when its sha256 differs from the version there (every PUT is a new version)
@@ -318,7 +333,9 @@ tasks:
       - cut -f1 {{.B}} > {{.RUN}}/files.txt
       # --files-from implies --relative (parents are created) and not -r; -L turns every
       # symlink into its file. A path that vanished since the listing is skipped: its
-      # state line then names a key the bucket lacks, which the next hour deletes.
+      # state line then names a key the bucket lacks, which the next hour deletes. No
+      # --partial: staging is emptied every batch, so there is nothing to resume, and a
+      # partial file must never reach the bucket.
       - task: retry
         vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/files.txt --ignore-missing-args {{.SOURCE}} {{.STAGING}}/'}
 
@@ -430,7 +447,7 @@ tasks:
   reconcile:
     desc: Rebuild the state from a bucket listing, then delete keys that neither upstream nor a reserved prefix (.state/, .site/) owns
     status:
-      - 'test "{{.RECONCILE}}" = false || { test "{{.RECONCILE}}" = auto && test "$(date -u +%H)" != 03; }'
+      - 'test "{{.RECONCILE}}" = false || { test "{{.RECONCILE}}" = auto && test "$(cut -d" " -f2 {{.RUN}}/late.txt)" != 3; }'
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
@@ -458,6 +475,9 @@ tasks:
         n() { test -f "$1" && wc -l < "$1" || echo 0; }
         cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
         ## Sync succeeded, $(date -u '+%Y-%m-%d %H:%M UTC')
+
+        $(paste {{.RUN}}/start.txt {{.RUN}}/late.txt | awk -v m={{.CRON_MINUTE}} -v ev="${GITHUB_EVENT_NAME:-local}" '{ printf "Started %02d:%02d UTC", int($1 / 3600) % 24, int($1 / 60) % 60 }
+          ev == "schedule" { printf ", %d min after the :%02d slot", $2 / 60, m } END { print "." }')
 
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(awk -F'\t' '{ s += $2 } END { printf "%.2f GB", s / 1e9 }' {{.RUN}}/upstream.txt) upstream, at [{{.URL}}/]({{.URL}}/) |
         |---|---|
@@ -537,10 +557,13 @@ hand or by a `task tiered` that is never in `sync`.
 
 ## 2. The data files
 
-All in `RUN` (`/tmp/ctan-run`), all plain text, all one record per line.
+All in `RUN` (`/tmp/ctan-run`), all plain text, all one record per line. The raw listing is
+538,289 lines (511,027 regular files, 27,262 directories) and takes 6.9 s from dante
+(`SCRATCH/rsync-time.txt`, 2026-08-26).
 
 | File | Written by | Line format | Sorted |
 |---|---|---|---|
+| `start.txt`, `late.txt` | `clock` | the run's start as epoch seconds; `lateness_seconds slot_hour` | |
 | `listing.txt` | `list` | rsync `--list-only` raw: `perms size yyyy/mm/dd hh:mm:ss path` | rsync's order |
 | `upstream.txt` | `list` | `path TAB size TAB yyyy/mm/dd hh:mm:ss` | `LC_ALL=C sort` |
 | `applied.txt` | `state`, `rebuild`, `checkpoint` | same as `upstream.txt`; the bucket's contents | same |
@@ -566,7 +589,7 @@ never produce either because CTAN has no dot directories at its root.
 
 ### Why path first
 
-The base plan's line was `size mtime path`. With that order `comm` on whole lines is wrong,
+A size-first line (`size mtime path`) makes `comm` on whole lines wrong,
 because `comm` compares whole lines and its merge assumes both inputs are sorted by that
 comparison. Demonstrated:
 
@@ -612,14 +635,16 @@ the state and not upstream, computed each hour by `comm -23` on the path columns
 column, nothing to garbage-collect. A vanished-mid-run path (rsync `--ignore-missing-args`)
 leaves a state line naming a key the bucket never received; the next hour lists it as deleted,
 `DeleteObjects` on an absent key succeeds, and the line goes. The daily `reconcile` removes it
-the same day at the latest.
+the same day at the latest. CTAN touches ~23 files an hour (16,568 in 30 days, computed), so
+failing the run on a vanished path would end most multi-hour pushes early for nothing.
 
 ## 3. The batching algorithm
 
 Input: `changed.txt`, path-sorted, `path TAB size TAB mtime`. Output: `batch-NNNN.txt` files
 that partition it. Three rules: a batch holds at most `CAP` bytes by listing size; a line
-larger than `CAP` is a batch by itself and leaves the running batch untouched (the base
-plan's flush-then-lone rule left five half-empty batches behind the five installers); every
+larger than `CAP` is a batch by itself and leaves the running batch untouched (flushing the
+running batch before each lone file would leave five half-empty batches behind the five
+installers); every
 `systems/texlive/tlnet/tlpkg/` line and every root file goes into one final decision batch.
 There is no separate 4.995 GiB rule: with `CAP` at 4 GB decimal, every file over R2's
 single-part limit is over `CAP`. Only the first `MAX_BATCHES` files run in a given hour; the
@@ -641,9 +666,11 @@ plan reads sizes from the listing and nothing is fetched to make it. Text in `RU
 seed: `listing.txt` 50.7 MB, `upstream.txt` 37.7 MB, `changed.txt` 37.7 MB, batches 37.7 MB,
 `applied.txt` and `applied.new` up to 37.7 MB each, `.xz` copies 3 MB: ~205 MB.
 
-With `MAX_BATCHES=4` the seed is eight hourly runs: 4 batches of ~4 GB at 22.7 MB/s from
-dante and ~100 `PutObject`/s is 15 to 25 minutes, well inside the hour, and the decision
-batch lands in the eighth. `max_batches` on `workflow_dispatch` raises it for a manual push.
+With `MAX_BATCHES=4` the seed is eight scheduled runs: 4 batches of ~4 GB at 22.7 MB/s from
+dante and ~100 `PutObject`/s is 15 to 25 minutes of work, and the decision batch lands in
+the eighth. Each scheduled run starts 15 to 45 minutes after its slot, so the wall clock is
+about eight hours plus that drift; `seeding-and-migration.md` has the arithmetic and the case
+for `workflow_dispatch`, which starts at once. `max_batches` raises the per-run count.
 
 ## 4. Expressing the loop in go-task
 
@@ -763,7 +790,9 @@ on:
         default: off
 permissions:
   contents: read
-concurrency: sync   # one run at a time; a run that fires during another waits and starts the moment it ends
+concurrency:
+  group: sync
+  cancel-in-progress: false   # one run at a time; a slot that fires during a run waits and starts the moment it ends
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -793,14 +822,24 @@ What each line rests on (all fetched from docs.github.com today):
 - `schedule`: POSIX cron, 5-minute minimum, "can be delayed during periods of high loads
   ... High load times include the start of every hour", disabled after 60 days without
   repository activity in a public repo. The minute 41 was drawn once with `shuf -i 5-59 -n 1`
-  and is fixed; any minute after :05 works, and none should be :00.
+  and is fixed; any minute after :05 works, and none should be :00. The cron minute names
+  the slot, not the start: the one scheduled run in this repository's history so far (cron
+  `30 3 * * *`) was created at 04:09:16 UTC on 2026-08-26, 39 minutes after its slot, and
+  the next was 18 minutes late and counting. Lateness of 15 to 45 minutes is normal and a
+  slot can be dropped. Nothing here waits for a slot: every run does the same five things
+  from wherever the state stands, `clock` records how late it was, `report` prints it, and
+  the reconcile keys on the slot's hour, not the clock's. Whether an off-peak minute reduces
+  lateness is unverified; `sync-with-dante.md` has the cadence figures.
 - `concurrency: sync` with the default `cancel-in-progress: false`: a running job keeps
   running; at most one run is pending per group; a newer trigger **replaces** the pending
   one; pending runs start in FIFO order when the running one ends ("ordering is not
-  guaranteed" refers to start times, not to two runs overlapping). So a run that overruns
-  its hour collapses the triggers behind it into one pending run that starts the instant
-  it ends, and a reconcile dispatched during a run queues behind it.
-- `timeout-minutes: 350` always. With `MAX_BATCHES=4` a run is minutes, and nothing in the
+  guaranteed" refers to start times, not to two runs overlapping). So a run that starts 40
+  minutes late and works past the next slot collapses the triggers behind it into one
+  pending run that starts the instant it ends, and a reconcile dispatched during a run
+  queues behind it. There is no external cron or paid runner to fix the lateness; the
+  constraints forbid both, and the design absorbs it instead.
+- `timeout-minutes: 350` always; lateness does not touch it, since it bounds the job from
+  its own start. With `MAX_BATCHES=4` a run is minutes, and nothing in the
   pipeline can hang for hours: rsync has `--timeout`, curl `--max-time`, the AWS CLI a read
   timeout, and `retry` gives up in 15.5 minutes. A manual push with a high `max_batches`
   checkpoints every batch, so the 6-hour job limit (fetched: "Each job in a workflow can run
@@ -809,8 +848,9 @@ What each line rests on (all fetched from docs.github.com today):
   keeps booleans as booleans, and on a `schedule` trigger `inputs.*` is empty, so the
   expressions above yield `SEED=false RECONCILE=auto MAX_BATCHES=4 CACHE=off` on the cron.
   Turning the cache on for good is changing the `cache` default in this file, one reviewed
-  line. `RECONCILE=auto` runs the reconcile when the run's `reconcile` task starts in hour
-  03 UTC; the 03:41 run is that run.
+  line. `RECONCILE=auto` runs the reconcile in the run whose slot is 03:41, whether it
+  starts at 03:41 or 04:25; `late.txt` carries the slot's hour. A dropped 03:41 slot means
+  no reconcile that day and the next day's catches up.
 - Secrets: the four today plus `CF_API_TOKEN` and `CF_ZONE_ID` (`caching.md` gives the
   scopes). `permissions: contents: read` is unchanged; nothing writes to the repo.
 - The `df -h .` line puts the free-space figure section 6 lacks into every run's log.
@@ -857,6 +897,12 @@ nor network. `lint` validates the rule files with the tool list as it stands:
       - test "$(sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' {{.F}} | head -1)" = "$(sed '/"description": *"sha256:/d' {{.F}} | shasum -a 256 | cut -c1-64)"
 ```
 
+`lint` also holds the one line that ties the Taskfile to the workflow:
+
+```yaml
+      - test "$(sed -n "s/.*cron: '\([0-9]*\) \* \* \* \*'.*/\1/p" .github/workflows/sync.yml)" = "{{.CRON_MINUTE}}"
+```
+
 Task's `fromJson` yields `null` on malformed input rather than an error (verified), and
 `.rules` on `null` renders as nothing, so `test  -ge 1` fails the task; a well-formed file
 with no `rules` array fails the same way. The second line pins the convention `rules`
@@ -880,12 +926,13 @@ passed as `RUN`. The commands below were run on 2026-08-26 against the real list
 | `diff` | `task diff RUN=<dir>` with canned `upstream.txt` and `applied.txt` (delete 11 lines from a copy: `changed.txt` has 11 lines, `deleted.txt` 0; delete them from `upstream` instead: 0 and 11) | `comm` 0.1 s; whole-line vs path-only semantics |
 | `plan` | `task plan RUN=<dir> STAGING=<dir>` with `changed.txt` = the listing minus its `systems/texlive/tlnet/` lines | 30 batches, sums as in section 3; the last file is the 10 root files; `cat batch-*.txt \| wc -l` equals `wc -l changed.txt`; `CEILING_GB=100` must fail; a `changed.txt` with one 20 GB line must fail the disk check |
 | `batches` | `task --dry --force batches RUN=<dir> MAX_BATCHES=2` with three batch files | exactly two `batch` calls render (verified) |
+| `clock` | `task clock RUN=<dir>` then `cat <dir>/late.txt`; or the awk alone on a fixed epoch (below) | lateness and slot hour without `date -d` or `date -r` |
 | `tlpdb` | `task tlpdb RUN=<dir> SOURCE=$PWD/staging/../` pointing `SOURCE` at a local copy of tlnet's parent (`--files-from` works on local paths) | sha512, gpgv, the pin |
 | `verify` | `task verify B=<batch> RUN=<dir> STAGING=$PWD/staging` with the repo's `staging/tlpkg` copied to `<dir>/tl/tlpkg`, a `paths.txt`-shaped `applied.txt` and an empty `deleted.txt`, and a batch file naming a few `archive/` lines present in `staging/` | containers match; one byte changed in a container fails; a tlpdb differing from `RUN/tl` fails; with `tlpkg/texlive.tlpdb` in the batch and one container path removed from `applied.txt`, `missing.txt` names it and the task fails |
 | `publish`, `checkpoint`, `delete`, `rebuild`, `purge`, `rules`, `page` | no offline check is honest: `file://` is not an S3 endpoint and the AWS CLI is not installed locally by default. Use a scratch bucket: `task sync BUCKET=ctan-test HOST=<its r2.dev host> SEED=true CEILING_GB=1 CACHE=off` against a `SOURCE` of one small CTAN subtree (`.../CTAN/info/lshort/`) | the whole loop, checkpoints, a second run with an empty delta, a deletion, then `RECONCILE=true` after deleting the state key |
 | `smoke` | `task smoke URL=file://<dir> RUN=<dir>` with `<dir>/timestamp` and an `upstream.txt` line for it: `curl -I file://` returns `Content-Length` (verified) | size compare; the tlpdb `cmp` when `RUN/tl` exists |
 | `report` | `task report RUN=<dir>` | renders from canned counts |
-| `retry` | as the base plan: `task retry CMD='exit 5'` scaled sleeps | |
+| `retry` | `task retry CMD='exit 5'` with the sleeps scaled down | exit 23 fails at once; a permanent exit 5 gives up after five tries |
 | `check.yml` | `task --dry --force sync` locally | every command renders with no network |
 
 One runnable check per non-trivial piece of logic, the smallest thing that fails if it
@@ -906,6 +953,8 @@ LC_ALL=C join -t "$(printf '\t')" -o 1.1,1.2,1.3,2.2 up bk | awk -F'\t' '$2 == $
 cut -f1 bk | grep -vE '^\.(state|site)/' | LC_ALL=C comm -23 - <(cut -f1 up)                  # z
 # purge: only paths the state knows
 printf 'new\nold\n' | LC_ALL=C comm -12 - <(printf 'old\n')                                    # old
+# clock: 2026-08-26 04:20:16 UTC against a :41 slot is 39 min late and belongs to the 03 slot
+echo 1787718016 | awk -v m=41 '{ late = ((int($1 / 60) % 60 - m + 60) % 60) * 60 + $1 % 60; print int(late / 60), int(($1 - late) / 3600) % 24 }'   # 39 3
 ```
 
 Local hazards: macOS `awk` and `sort` agree with the runner's mawk and GNU sort on
@@ -931,6 +980,7 @@ listing differs from rsync 3.2.7 only in the blank zero size, which the normalis
 | `TL_KEY` | `C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC` | no; rotate only against tug.org/texlive/verify.html |
 | `CEILING_GB` | 175 | `cost-estimates.md` sets the number; today's tree is 133 GB, the 30-day churn 4.71 GB (computed) |
 | `BATCH_GB` | 4 | only if the runner's free disk changes |
+| `CRON_MINUTE` | 41 | with the cron line in `sync.yml`; `lint` fails when they differ |
 | `MAX_BATCHES` | 4 | run-time flag; raise on a manual push |
 | `SEED`, `RECONCILE`, `CACHE` | `false`, `auto`, `off` | run-time flags from the workflow; `cache` becomes `on` by editing its default in `sync.yml` |
 | `RSYNC` | `rsync --timeout=300 --contimeout=60 --no-h` | no; `--no-h` keeps rsync 3.x from printing commas in the listing, which the normaliser also strips |
@@ -941,61 +991,9 @@ listing differs from rsync 3.2.7 only in the blank zero size, which the normalis
 | Secrets | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID` | all six, in the fork's repository settings |
 
 Fixed inside tasks, not variables: the 400,000-line listing floor, 1,000 keys per
-`DeleteObjects`, 100 URLs per purge, `sleep 0.3`, the 1 GiB disk headroom, hour 03 for
+`DeleteObjects`, 100 URLs per purge, `sleep 0.3`, the 1 GiB disk headroom, the 03 slot for
 `auto` reconcile, the reserved prefixes `.state/` and `.site/`, the four ruleset files, and
 rsync's retryable exit codes `5 10 12 30 35`.
-
-## 10. Where this differs from the base plan
-
-| Base plan | This file | Why |
-|---|---|---|
-| Stored set 496,155 objects, 133.01 GB | **496,149 objects, 132.99 GB** | the base kept the six `update-tlmgr-r*` files today's `fetch` excludes; the normaliser drops them by name |
-| Listing 6.6 s, 523k entries | 6.9 s today (`SCRATCH/rsync-time.txt`), 538,289 lines: 511,027 files, 27,262 directories | re-measured |
-| State line `size mtime path` | `path TAB size TAB mtime` | whole-line `comm` is wrong with the size first (section 2) |
-| 50.7 MB text, 3.2 MB `.xz` | 37.7 MB, 3.1 MB | the normalised file, not the raw listing |
-| Three batching rules (4 GB cap, lone over 4.995 GiB, `tlpkg/` last) | cap; lone over cap without flushing; a decision batch of `tlpkg/` and the ten root files, last, `timestamp` uploaded last | `timestamp` sorts after `systems/` and would land mid-run; the flush rule left five half-empty batches |
-| Seed ~34 batches in one 6-hour job | 30 batches after `RECONCILE=true` bootstraps the state from the 16,974 live tlnet keys, worked 4 an hour over 8 hourly runs (`MAX_BATCHES`) | no re-put of the live mirror; no run near the job limit |
-| Per-file `multipart_threshold` override for the five installers | one `aws.config`, threshold `4GB`, chunk `512MB` | the CLI already uses multipart above the threshold; a 512 MiB chunk makes 15 Class A per installer, not ~860 |
-| `retry_mode = adaptive` | `standard` | the adopted value; adaptive is experimental |
-| `guard` becomes a check on the batch plan | `plan` checks the upstream total against `CEILING_GB` and the largest changed file against `df`, with 1 GiB headroom; `fetch` re-checks per batch | the disk figure is measured, not assumed |
-| `rsync --partial` on batch pulls | dropped | staging is emptied every batch; a partial file with exit 0 is impossible, and with exit non-zero it is never uploaded |
-| rsync exit 23 on a vanished path fails the run | `--ignore-missing-args`; the phantom state line is deleted next hour | a multi-hour seed would otherwise die on the first upstream deletion (CTAN touches ~23 files an hour) |
-| `verify` checks "every container in the delta" against the tlpdb, and "every named container exists" against dante's listing | the tlpdb is fetched once per run into `RUN/tl` (2.9 MB) and pinned; each batch checks its containers against it; on the decision batch, every named container must be in the bucket after this run (state ∪ batch − deletions), and the uploaded tlpdb must `cmp` equal | containers land in earlier batches than the tlpdb; dante's listing says what dante has, not what the bucket will have |
-| Seed is "the first hourly run with no state file" | a missing state **fails** unless `SEED=true` (empty bucket) or `RECONCILE=true` (rebuild from the listing) | a lost state key or a wrong bucket must not silently start a 133 GB re-upload |
-| `timeout-minutes` 55 hourly, 360 for the seed, trimmed after | 350 always, with `MAX_BATCHES` bounding the work | section 7 |
-| Daily reconcile "at the existing 03:30 slot" joins the listing to the state | `RECONCILE=auto` in hour 03 of the hourly cron; `rebuild` makes the state upstream ⋈ bucket on key and size; extras outside `.state/` and `.site/` deleted in the same run | a second cron would collide with the hourly one under `concurrency`; extras not deleted now would never be, since the rebuilt state does not know them |
-| `rules` PUTs two rulesets and POSTs Smart Tiered Cache every hour; purge covers every uploaded key | `rules` GETs each ruleset and PUTs only when the file's sha256 differs; tiered cache is a one-time setting; `CACHE=off` by default means one bypass rule and no purges; `CACHE=on` purges changed and deleted keys, never new ones | every PUT is a ruleset version; a key never served has nothing to purge (`caching.md`) |
-| `page` stays only if the landing page moves | `page` stays, uploading to `.site/index.html`; the Transform Rule targets it; CTAN's `index.html` is stored at `/index.html` | `official-mirror-and-url.md` |
-| `smoke` `cmp`s files with staging | staging is empty after the last checkpoint; `smoke` compares `Content-Length` with the listing for `timestamp` and three uploaded keys, and `cmp`s the tlpdb sha512 with the verified copy in `RUN/tl` | the cache assertions are `caching.md`'s and slot into the same task |
-| Deletions "1,000 keys per call" | the same, plus `grep Errors`: the CLI exits 0 on per-key errors in quiet mode (fetched) | |
-| tlcontrib's versioned containers (261 files, 0.46 GB) unmentioned | kept: the exclusion is anchored to `systems/texlive/tlnet/` | open question below |
-
-Lines in `CLAUDE.md` that must change:
-
-- The opening paragraph: "A daily mirror of `CTAN/systems/texlive/tlnet`" becomes an hourly
-  mirror of CTAN; 17,400 files and 6.8 GB become 496k and 133 GB; "the largest file is
-  ~145 MB" becomes 6.87 GB.
-- "Everything is in four files": `cloudflare/` gains four ruleset files; `site/index.html`
-  now lands at `.site/index.html`; `task sync` lists the fourteen steps above.
-- Constraints: "R2 free tier (10 GB-month ...)" becomes the `CEILING_GB` line from
-  `cost-estimates.md`; endpoints gain `api.cloudflare.com`; secrets are six; the tool list
-  is unchanged.
-- "Objects stay under `systems/texlive/tlnet/`" becomes "Objects stay at CTAN's own paths
-  from the bucket root; `.state/` and `.site/` are the two keys CTAN does not own."
-- Must knows: "No versioned containers" keeps its reason and gains "the normaliser in
-  `list` drops them, anchored to `systems/texlive/tlnet/`". "Never `--size-only`" is
-  rewritten: there is no `aws s3 sync`; a same-size bump is caught because the state line
-  carries the upstream mtime. "Never `aws s3 sync --delete`" stays as history's reason for
-  `LC_ALL=C sort` on every bucket listing. "Single-part uploads" becomes "one `aws.config`,
-  threshold 4 GiB, chunk 512 MiB, five files multipart". "`publish` uploads in a fixed order"
-  becomes "the decision batch is last, `timestamp` last within it; `delete` runs after every
-  batch". "`index.html` lives at the bucket root" becomes "the landing page is
-  `.site/index.html`; CTAN's `index.html` is a mirrored file". "Do not trust the job log for
-  counts" stays. "A failed run is the only alert" gains the 2-hour grace and "a missing
-  state file fails the run; `RECONCILE=true` rebuilds it". The `.xz` cache line is replaced
-  by the `CACHE` flag and the purge rule.
-- Verification and security: item 5 becomes the delta form (section 1 `tlpdb` and `verify`).
-- Verifying a change: the table in section 8 replaces the list.
 
 ## Open questions
 
@@ -1022,6 +1020,9 @@ Lines in `CLAUDE.md` that must change:
   while the live `timestamp` is an hour or more old. mirmon's threshold is 1 day 4 h, so a
   seed's eight hours are inside it; `monitoring.md` may want the "left for the next hour"
   count in the ping body.
+- A run more than an hour late is read as the next slot's (the lateness folds at 60 minutes),
+  so `report` understates it and `auto` may reconcile a day off. GitHub's run metadata has the
+  true slot; the job summary does not, and a slot that late is one to notice in the Actions list.
 - `RECONCILE=true` given to bootstrap a missing state also runs the end-of-run reconcile
   (one more bucket listing, 497 Class A). Harmless; a separate flag would avoid it.
 - The `lint` task's `fromJson` check is a template trick. If it proves fragile, `jq -e`

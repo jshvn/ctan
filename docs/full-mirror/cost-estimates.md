@@ -139,8 +139,8 @@ awk '$1 ~ /^l/ && $5 ~ /^(bibliography|digests|documentation|languages|tds|tds.z
 
 Storing the aliases costs 27 GB-month, $0.41/month. Six Cloudflare redirect rules would
 save it (Redirect Rules are free on the Free plan; count not checked here, see limits.md).
-The base plan chooses the copies to avoid dashboard state; that is a design question for
-taskfile-architecture.md. The cost of either choice is in the table below.
+Copies keep the state in the bucket; rules put it in the dashboard. The choice is
+taskfile-architecture.md's; the cost of either is in the table below.
 
 ### Largest objects and the two size limits
 
@@ -167,9 +167,8 @@ awk "$STORED"' && $2 ~ /^[0-9]+$/ {if ($2>5363466240) a++; if ($2>536870912) b++
 | Under 1 MB | 485,720 (97.9%) | the bucket is small files |
 | Under 10 kB | 330,484 (66.6%) | |
 
-Average object 268,051 bytes (132.99 GB / 496,149). The base plan's 244 KB is wrong, and its
-"868k objects at 200 GB" with it: at the measured average 200 GB is 746k objects and 300 GB
-is 1,119k.
+Average object 268,051 bytes (132.99 GB / 496,149). At that average, 200 GB is 746k objects
+and 300 GB is 1,119k; the larger-bucket rows below use those counts.
 
 ### File-type mix
 
@@ -244,8 +243,8 @@ Source: https://developers.cloudflare.com/r2/pricing/ ("Last updated Aug 7, 2026
   performed one million and one operations, you will be billed for two million operations.
   If you have used 1.1 GB-month, you will be billed for 2 GB-month."
   **The billing unit for operations is one million.** Any Class A overage costs at least
-  $4.50 and any Class B overage at least $0.36. The base plan prices overages linearly
-  ("1,282k → $1.27") and that is wrong; see [Where this differs](#where-this-differs-from-the-base-plan).
+  $4.50 and any Class B overage at least $0.36. Every overage below is priced in that unit:
+  1.1M Class A in a month is $4.50, not $0.45.
 - Failed requests: "You are not charged for operations when the caller does not have
   permission to make the request (HTTP 401 `Unauthorized` response status code)." Nothing
   else is exempted; a 404 `GetObject` is a Class B and a `PutObject` that fails with 5xx is
@@ -277,7 +276,9 @@ Inputs: `ListObjects` returns 1,000 keys a page, so a full listing is ⌈objects
 497 today, 747 at 200 GB (746k objects), 1,120 at 300 GB (1,119k). PutObjects per month are
 the 30-day churn (16,490 files on the stored set, computed below), scaled by size for the
 larger buckets (24,797 at 200 GB, 37,195 at 300 GB); plus 450 for the 15 keys `aws s3 sync`
-re-uploads every run under the current `publish`. 30 days, 720 hourly runs.
+re-uploads every run under the current `publish`. 30 days, 720 hourly slots; scheduled runs
+start 15 to 45 minutes late and slots can be dropped (observed in this repository: the
+03:30 slot of 2026-08-26 started at 04:09:16 UTC), which only lowers these counts.
 
 | Design | Class A per month at 133 GB | at 200 GB | at 300 GB |
 |---|---:|---:|---:|
@@ -397,8 +398,8 @@ awk -v cut="2026/07/27 17:00:00" '$1 ~ /^-/ && $5 ~ /^systems\/texlive\/tlnet\/a
 doc (0.435), 74 source (0.012), 44 platform binaries (0.306, of which 4 are `x86_64-linux`).
 A `scheme-full` Linux user who updates once a month fetches **417 containers, 0.55 GB**, plus
 3 `tlpkg/` reads. One who runs `tlmgr update` daily adds 90 `tlpkg/` reads: ~507 GETs a
-month. The base plan's "~100 to 150 GETs per user per month" is a third of that; it fits a
-`scheme-medium` user, not the full scheme.
+month. A `scheme-medium` user holds about a third of the packages and fetches about a third
+of that.
 
 A human sent by `ctan.org` to a package: one GET. `macros/latex/contrib/*.zip` averages
 807 KB (median 281 KB, 2,710 files); `install/*.tds.zip` averages 3.0 MB. A directory URL is
@@ -456,7 +457,7 @@ footnote 1, and "Bandwidth: Included in all plans. Cloudflare does not charge fo
 bandwidth" at
 https://developers.cloudflare.com/billing/understand/how-charges-accrue/).
 
-### Cached: the future state, not the plan
+### Cached: the future state
 
 The adopted design ships with the edge cache off (`CACHE: off`, caching.md), so the
 uncached table above is the bill as planned. This table is what turning the cache on buys
@@ -475,9 +476,9 @@ Class B = 6 × installs × 30 + 15,000 × 2 × 30 + 33,000 ≈ 933k + 180 × ins
 
 ### The "ceiling with caching", examined
 
-The base plan's ceiling: every object refetched from R2 once a day, times two.
+The ceiling argument: every object refetched from R2 once a day, times two.
 496,149 × 2 × 30 = 29,769,300 Class B → 19.77M billable → 20M → **$7.20**, plus storage
-**$9.05** at 133 GB (the base plan's $8.96 used linear pricing). At 200 GB (746k objects):
+**$9.05** at 133 GB. At 200 GB (746k objects):
 44.8M → 35M → $12.60 + $2.85 = $15.45. At 300 GB: 67.1M → 58M → $20.88 + $4.35 = $25.23.
 
 Each assumption under it, checked:
@@ -534,14 +535,13 @@ retry granularity, not the bill.
 Storage, prorated by the daily-peak rule. The bucket holds 6.8 GB of tlnet until the seed
 lands. Seeded on day 15 and finished the same day: (14 × 6.8 + 16 × 132.99) / 30 = 74.1
 GB-month → 75 − 10 = 65 × $0.015 = **$0.98**. Seeded on the 1st: $1.85. On the 25th:
-(24 × 6.8 + 6 × 132.99) / 30 = 32.0 → 33 − 10 = 23 → $0.35. The base plan's $0.92 counted
-15 full days; the seed day itself peaks at full size.
+(24 × 6.8 + 6 × 132.99) / 30 = 32.0 → 33 − 10 = 23 → $0.35. The seed day itself counts
+at full size, because the meter takes each day's peak.
 
 A second seed in the same calendar month: 513.5k + 513.5k = 1,027,000 Class A → 27,000 over
 the free million → rounds up to 1M → **$4.50**. A third: 1,540,500 → 540,500 over → still
-1M billable → **$4.50 for the month, not $4.50 more**. A fourth: 2.07M → 1.07M over → 2M →
-$9.00 (a fourth: 2.05M → 1.05M over → 2M). The base plan's "a second full seed reaches 1M; a third costs ~$2.25" is wrong on
-both counts.
+1M billable → **$4.50 for the month, not $4.50 more**. A fourth: 2.05M → 1.05M over → 2M →
+$9.00.
 
 Runner minutes, egress, purges, deletes: $0. Dante hands out 133 GB once.
 
@@ -610,7 +610,7 @@ awk -v cut="2026/07/27 17:00:00" '$1 ~ /^-/ && $5 ~ /^systems\/texlive\/tlnet\//
 month**, plus 457 more PutObjects a month (every revision bump lands twice, as
 `foo.r123.tar.xz` and as `foo.tar.xz`). Nothing requests the versioned name. The only reason
 to keep them is byte-for-byte fidelity with dante for `rsync` clients, which R2 cannot serve
-anyway. Cheap, and pointless; the base plan's open question can close as "no".
+anyway. Cheap, and pointless: the answer is no.
 
 ### Storing both `systems/win32` and `systems/windows`
 
@@ -665,8 +665,9 @@ size in this table.
 - The 100 MB "Max upload size" of a Free zone applies to requests proxied through the zone.
   Uploads go to `<account>.r2.cloudflarestorage.com`, which is not the zone; today's mirror
   uploads a 145 MB container daily. Not a cost; noted because it looks like one.
-- Cron drift and GitHub's 60-day schedule disable cost nothing; a stale mirror is delisted,
-  not billed.
+- Late and dropped scheduled runs cost nothing: a dropped slot is one listing fewer and the
+  same PutObjects an hour later. GitHub's 60-day schedule disable costs nothing either; a
+  stale mirror is delisted, not billed.
 
 ## Cost sensitivity
 
@@ -711,49 +712,13 @@ traffic or a listing that already happened, and stopping the mirror does not und
 | Class A month-to-date, `r2OperationsAdaptiveGroups` (signals, never fails) | > 800,000 | 80% of the free million; an hourly listing-twice design or a second seed crosses it days before the bill does | a `publish` that started listing per hour |
 | Class B month-to-date (signals, never fails) | > 8,000,000 | 80% of the free 10M; at 28 installs/day uncached it trips on day 24, at 100/day on day 7 | the cache rule silently gone |
 
-The guards are read on the next hourly run, so the worst spend between a breach and a
-human is one hour of whatever caused it: at 1,000 uncached installs a day, one hour is 497k
-Class B, $0.18. A breach that nobody acts on is unbounded only on the Class B line; storage
+The guards are read on the next run, and a scheduled run starts 15 to 45 minutes after
+its slot and can be dropped, so the worst gap between a breach and a signal is about two
+hours of whatever caused it: at 1,000 uncached installs a day, two hours is 993k Class B,
+$0.36. A breach that nobody acts on is unbounded only on the Class B line; storage
 cannot grow past its guard because the guard stops the run that would grow it, and Class A
 is bounded by the sync design at any bucket size in the tables above. How each number is read, and the GraphQL queries, are in monitoring.md; what to do
 when one trips is in errors-and-issues.md.
-
-## Where this differs from the base plan
-
-- **Operations bill in whole millions.** The pricing page's own example: one million and
-  one operations are billed as two million. The base plan prices overages linearly:
-  "1,282k → $1.27" is $4.50; "a third [seed] costs ~$2.25" is $4.50 for the month whether
-  the second or third seed caused it.
-- The stored set also drops the six `update-tlmgr-r*` files at the tlnet root
-  (`update-tlmgr-r79982.exe`, `.sh`, and their `.sha512` and `.sha512.asc`; 13.6 MB), as
-  today's `fetch` does; the base plan's 496,155 / 133.01 GB counts them. 496,149 objects,
-  132.99 GB, 123 GB-month, $1.85 (the base plan's $1.84 is the same 123 GB-month rounded
-  down).
-- Average object 268 KB, not 244 KB; 200 GB is ~746k objects, not 868k. The Class A rows
-  at 200 GB are recomputed with that.
-- Multipart is priced at the adopted `aws.config` (4 GB threshold, 512 MB parts): 5
-  objects, 75 Class A. At today's 200 MB threshold 14 objects would go multipart, and at the
-  CLI's 8 MB default the five alone are 4,075 Class A.
-- The seed-month storage is $0.98 (seed day counts at full size), not $0.92.
-- The cached design is a future state (`CACHE: off` is the default). Its ceiling is $9.05 at 133 GB and $15.45 at 200 GB, not $8.96 and $18.00,
-  and it is not a ceiling: decision-file reads, the 7 uncacheable objects, and 404s are
-  linear in traffic. The base plan's "Whatever traffic does, the bill cannot pass that" is
-  false; what is true is that the uncapped part is $0.36 per million requests.
-- `tlmgr update` for a `scheme-full` user is ~417 container GETs a month (computed), not
-  "~100 to 150".
-- Churn on the stored set over 365 days is 82,592 files / 62.43 GB; the base plan's 76,047
-  / 55.87 GB in the main table is the no-alias tree, labelled as if it were the stored set.
-  7-day and 30-day figures differ by about 1% (window edge and the unsized lines).
-- 523 objects have no size in the listing; the base plan's byte totals silently added their
-  year as bytes (about 1 MB, harmless, but the object counts by directory were off: root
-  showed 535 files, it has 10).
-- "Free plan may serve large files via R2: verified" is overstated. The terms require a
-  Paid Service; the 2023 blog says R2-hosted content qualifies; a 133 GB bucket is paid
-  usage. Marked unverified with the residual risk stated.
-- The Wikipedia traffic figure has no citation on the page. The one measured per-mirror
-  figure found is ftp.fau.de's 95 TB in 2018.
-- Keeping the versioned containers is +$0.10/month and adds 457 uploads a month;
-  recommended answer: no. tlcontrib's 261 versioned containers are dropped the same way.
 
 ## Open questions
 

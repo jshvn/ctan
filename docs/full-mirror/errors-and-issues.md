@@ -1,8 +1,6 @@
 # Errors and issues
 
-Every way the full mirror can fail, and what the pipeline does about each. This file expands the
-base plan's "Two loops, no third", "The inner loop, per tool", "Timeouts and budgets", "Error
-classes", the `retry` task and the failure narratives in "The run after the seed". Sibling files
+Every way the full mirror can fail, and what the pipeline does about each. Sibling files
 own the mechanisms this file only names: the pipeline itself (`taskfile-architecture.md`), the
 diff and batch model (`sync-with-dante.md`), the alerts (`monitoring.md`), the cache rule and
 purge (`caching.md`), signatures (`verification-and-security.md`), limits (`limits.md`).
@@ -13,8 +11,9 @@ the listing taken that day, or is marked unverified with the one thing that woul
 ## The model in one paragraph
 
 Two loops. Inside a run, each tool retries a transient error for minutes with exponential backoff
-and jitter, then the run fails. Outside the run, the hourly cron is the retry: the state file in
-the bucket stands as of the last committed batch, so the next run recomputes the remaining delta
+and jitter, then the run fails. Outside the run, the hourly cron is the retry, whenever GitHub
+starts it (15 to 45 minutes after its slot as a matter of course, occasionally not at all): the
+state file in the bucket stands as of the last committed batch, so the next run recomputes the remaining delta
 and continues. Every write is idempotent (or its unsafe window is named below), so no retry is
 ever unsafe. A failed run is loud (GitHub email); a run that does not happen is caught by
 healthchecks. The dangerous failures are the ones that do neither; section 8 lists every one and
@@ -54,7 +53,7 @@ row 6; section 7 says why that is the right trade.
 | Failure | Symptom | Retried in run | Bucket / state after | Next hour | Human |
 |---|---|---|---|---|---|
 | dante down, DNS gone, port closed | rsync exit 10 (socket), 35 (connect timeout), 5 (`@ERROR` / refused handshake) | yes: `retry` task, 5 attempts, at most 570 s of sleeps | untouched | reruns | nothing for a blip; a day of this is 24 failed runs (section 6) |
-| dante at `max connections` | stderr `@ERROR: max connections (N) reached -- try again later`; exit 5 (base plan; not re-verified here) | yes, with jitter so we do not return on the same beat as the other refused clients | untouched | reruns | nothing |
+| dante at `max connections` | stderr `@ERROR: max connections (N) reached -- try again later`; exit 5 (from `clientserver.c`, which prints `@ERROR` and returns -1, and `errcode.h`; not observed on the runner) | yes, with jitter so we do not return on the same beat as the other refused clients | untouched | reruns | nothing |
 | Transfer stalls | exit 30 after `--timeout` seconds of no data | yes | untouched | reruns | nothing |
 | Protocol stream error, daemon restarted mid-list | exit 12 | yes | untouched | reruns | nothing |
 | Module renamed or path moved | stderr `@ERROR: Unknown module`, exit 5 | yes, wastefully: 5 attempts before failing | untouched | fails every hour | edit `SOURCE` (runbook R9). Exit 5 is shared by a transient and a permanent cause; read the log line |
@@ -139,9 +138,10 @@ legitimate reaches it in an hour. The guard is what turns "dante restored from b
 | Local disk full | exit 11, `No space left on device` | no | nothing uploaded | reruns; the batch cap should have prevented it | lower the cap if `df` shows less than 14 GB |
 | Job killed here | cancelled | n/a | partial `staging/`, gone with the runner; state as of the previous batch | repeats the batch | nothing |
 
-Why `--ignore-missing-args` and a state built from what landed. The base plan fails the whole run
-on exit 23 when a listed path vanished between the listing and the pull. During the seed, dante
-deleted 3 files in six hours; a vanished path in a 4 GB batch costs the batch and the hour. With
+Why `--ignore-missing-args` and a state built from what landed. Without the option, a listed
+path that vanished between the listing and the pull exits 23 and fails the whole run. dante
+deleted 3 files in six hours on 2026-08-26; a vanished path in a 4 GB batch would cost the batch
+and the hour. With
 `--ignore-missing-args` rsync skips the path and exits 0 ("This does not affect subsequent
 vanished-file errors if a file was initially found to be present and later is no longer there",
 which is exit 24, treated the same way). The checkpoint appends the lines for files present in
@@ -232,7 +232,7 @@ nothing would ever redo it.
 | Domain down, DNS, Cloudflare incident | curl 6/7/28/5xx after retries | curl retries | everything committed; only the proof failed | reruns; `smoke` alone is cheap | nothing; if Cloudflare is down the mirror is down for users too |
 | `timestamp` read back differs from staging | `cmp` differs | no | committed | reruns | the edge served a cached copy: `timestamp` must be excluded from the cache rule (`caching.md`) |
 | A sampled key differs | `cmp` differs | no | committed | reruns; the key is not re-purged unless it changes | purge by hand (R6); if it repeats, the purge is not taking: `caching.md` |
-| `cf-cache-status` not `HIT` on the second read of an archive key (`CACHE` on) | header mismatch | no | committed | reruns | the cache rule is not applying: the zone's rule differs from the repo (someone changed the plan, the domain, or the rule outside the phase we own) |
+| `cf-cache-status` not `HIT` on the second read of an archive key (`CACHE` on) | header mismatch | no | committed | reruns | the cache rule is not applying: the zone's rule differs from the repo (someone changed the zone plan, the domain, or the rule outside the phase we own) |
 | `tlpkg/texlive.tlpdb.sha512` or `timestamp` is `HIT` | header mismatch | no | committed | reruns | the rule caches what it must not; fix the JSON (with `CACHE: off`, any `HIT` at all is this row) |
 | Retry with output to a pipe | duplicate bytes: curl warns that on retry it "removes output data from a failed partial transfer that was written to an output file", but not from a pipe | | | | every `smoke` fetch writes `-o RUN/file` and `cmp`s the file, never `curl | cmp` |
 
@@ -257,7 +257,9 @@ consistent and the next run re-checks.
 |---|---|---|---|---|
 | `timeout-minutes` reached | run **cancelled** (not failed); GitHub notifies on cancelled runs by default, unless the account is set to failures only | as of the last checkpoint | resumes | nothing during the seed; afterwards, look at which step ran long |
 | Runner lost, GitHub incident | run failed or stuck | as of the last checkpoint | resumes | nothing |
-| Cron delayed at the top of the hour | run starts late | | the next slot | nothing; healthchecks grace must exceed one period (`monitoring.md`) |
+| Scheduled run starts 15 to 45 minutes late | normal operation, not a failure. GitHub: scheduled workflows "can be delayed during periods of high loads"; observed in this repository: the one scheduled run so far (cron `30 3 * * *`) was created at 04:09:16 UTC on 2026-08-26, 39 minutes after its slot, and the next was 18+ minutes late and not yet started at the time of writing. `report` prints the lateness (start minus slot) | unaffected | the same work, later; the delta is a little larger | nothing. No alert may fire on lateness alone (section 7) |
+| One slot dropped (no run for that hour) | possible under load; nothing in the job list for the slot | unaffected | the next run's delta covers two hours | nothing. Two consecutive slots without a started run is the incident threshold (section 7) |
+| A late run overlaps the next slot | a run that starts at :10 and needs 55 minutes (a release day, a seed) is still running when the next cron fires | unaffected | `concurrency: sync` with `cancel-in-progress: false` queues exactly one pending run, which starts the moment this one ends: no overlap, no lost hour, and the pending run's start is "late" by however long it waited | nothing |
 | Schedule disabled after 60 days without repository activity | no runs; healthchecks alerts after period plus grace | | none | any commit re-enables it, plus "Enable workflow" in the Actions tab (runbook R11). Whether Dependabot's weekly commits count as activity is unverified; they are commits on the default branch, so they should |
 
 ## 2. Retry semantics per tool
@@ -319,7 +321,7 @@ s3 =
 One `aws.config` for every upload: the 4 GB threshold keeps all but the five installers single
 `PutObject`, and 512 MB chunks make each installer about 14 parts instead of 860.
 
-Standard, not adaptive, which differs from the base plan. Adaptive is still experimental, and
+Standard, not adaptive. Adaptive is still experimental, and
 its rate limiter is process-wide: one 429 on the state key would slow all 32 upload workers for
 the rest of the run. R2 publishes no per-bucket write rate to adapt to, only 1 write/s per key,
 which the design never approaches. Adaptive buys nothing here and its behavior may change
@@ -435,8 +437,8 @@ rsync -rLt --timeout=300 --contimeout=60 --ignore-missing-args --files-from={{.R
 
 and for the listing the same timeouts with `--list-only`. Worst case per rsync call under the
 `retry` task below: 5 attempts, each at most 60 s to connect plus a 300 s stall, plus sleeps of
-at most 570 s: 5 × 360 + 570 = 2,370 s, about 40 minutes. The base plan's 15.5 minutes counted
-the sleeps only. Only a half-dead peer that accepts connections and sends nothing reaches this;
+at most 570 s: 5 × 360 + 570 = 2,370 s, about 40 minutes (the sleeps alone are 9.5 minutes; the
+attempts' own timeouts dominate). Only a half-dead peer that accepts connections and sends nothing reaches this;
 dante has never shown it, and the hourly job's `timeout-minutes` (55) is the backstop. A run
 that spends 40 minutes on one listing has nothing left for batches and fails at the job limit,
 which is the correct outcome for an hour in which dante is unusable.
@@ -631,9 +633,25 @@ Where a repeat is not safe, the window and the mitigation:
 
 ## 7. Platform anomalies
 
-- **Cron skipped or delayed.** "The schedule event can be delayed during periods of high loads
-  of GitHub Actions workflow runs. High load times include the start of every hour." Pick a
-  minute away from :00; healthchecks grace over one period.
+- **Scheduled runs start late, and sometimes not at all.** "The schedule event can be delayed
+  during periods of high loads of GitHub Actions workflow runs. High load times include the
+  start of every hour." Observed here: 39 minutes late on 2026-08-26, 18+ minutes and counting
+  on the run after. So the design treats 15 to 45 minutes of lateness as the normal start and a
+  dropped slot as something that happens, and never assumes a run begins at its cron minute.
+  There is no fix inside the constraints (no external cron, no paid runners), so the design
+  absorbs it: the state model already makes any hour's work resumable by the next; the
+  `concurrency` group turns an overlap into one queued run; mirmon's 28-hour freshness band
+  does not notice an hour; `report` prints the lateness so the trend is in every job page.
+  What must not fire on lateness alone: GitHub sends nothing for a run that has not started, so
+  it cannot; the healthchecks `sync` check must not either, so its period plus grace must cover
+  a 45-minute late start, the run itself (up to `timeout-minutes`, 55) and one dropped slot
+  (60 minutes) before it pages, which is at least 2 h 40 min of grace on a 1-hour period; the
+  exact values and the `/start` handling are in `monitoring.md`. The threshold that turns
+  lateness into an incident is two consecutive slots with no run started, which is what that
+  grace encodes: at that point either the workflow is disabled (next bullet), GitHub Actions is
+  down, or the repository is in a state where the cron no longer fires, and a human dispatches
+  by hand (runbook R13). Whether a minute away from `:00` to `:05` reduces the lateness is
+  unverified; it costs nothing to choose one.
 - **60-day disablement.** "In a public repository, scheduled workflows are automatically
   disabled when no repository activity has occurred in 60 days." Hourly runs are not activity.
   healthchecks catches it; a commit and "Enable workflow" fix it (R11).
@@ -700,13 +718,14 @@ Silent, and what sees each:
 | Same-size content drift after a state rebuild | reconcile compares size only | none cheap; tlnet covered by checksums; accepted | |
 | dante-side corrupt file outside tlnet | copied faithfully | none; same as every mirror | |
 | Cron stops (60 days, disabled workflow, GitHub incident) | no run at all | the `sync` healthchecks check goes late (period 1 h plus grace); the `reconcile` check covers a day without a reconcile | `monitoring.md` |
+| Scheduled run 15 to 45 minutes late, or one slot dropped | normal operation; nothing failed and nothing must page | `report` prints the lateness (start time minus the cron slot); the `sync` check's grace absorbs a late start, the run and one dropped slot; two consecutive missed slots page | `monitoring.md` |
 | healthchecks itself down | nothing pings the pinger | a second, independent probe of `/timestamp` age, or accept | `monitoring.md` |
 | mirmon marks us bad (WAF challenge, cache) while runs pass | the probe is not ours | `report` greps mirmon for our host and prints its state; fail the run if "bad" two runs in a row | `monitoring.md` |
 | Cancelled pending runs during the seed | not failures | nothing needed; note it in the seed day's checklist | `seeding-and-migration.md` |
 | Dashboard edits reverted hourly | that is the design | rule descriptions say so | this file, section 7 |
 | Job summary over 1 MiB dropped | step passes | keep lists to 20 lines | in-run |
 | Log lines dropped | cosmetic | counts from `RUN/` | in-run |
-| `timestamp` copied but its hourly `:02` touch not yet in our listing | run at `:01` copies the previous hour's | choose a cron minute after `:05` | `sync-with-dante.md` |
+| `timestamp` copied is the previous hour's | a run that lists before dante's `:02` touch copies the old one; in practice runs start 15 to 45 minutes late, so this needs a run on its exact minute | choose a cron minute after `:05`; mirmon's 28-hour band absorbs an hour either way | `sync-with-dante.md` |
 | An incomplete multipart upload left behind | free abort never ran | R2 lifecycle expires it after 7 days; `report` lists `list-multipart-uploads` daily (Class A, one call) | in-run, daily |
 
 Every row above is either in the run (free, no new dependency) or in `monitoring.md`. Nothing
@@ -805,48 +824,17 @@ curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_
 ```
 Five a minute on Free. Safe for correctness; every install after it is cold for a while.
 
-## 10. Where this differs from the base plan
-
-1. `retry_mode = standard`, not `adaptive`. Adaptive is still marked experimental today, its
-   rate limiter is process-wide, and R2 has no per-bucket rate to adapt to.
-2. The AWS CLI does not retry a bare 429 in standard or adaptive mode; the base plan's error
-   table lists "HTTP 408, 429" as retried by aws. Only listed error codes and 500/502/503/504
-   are. The design never triggers R2's per-key 429, so the difference is academic, but the
-   table was wrong.
-3. Worst-case rsync retry wall time is about 40 minutes, not 15.5: the base plan counted the
-   sleeps and not the five attempts' own timeouts.
-4. `--ignore-missing-args`, exit 24 tolerated, the state built from files that landed, and a 1%
-   missing cap, instead of "exit 23 fails the run". Fewer wasted batches during the seed, and
-   the state can never name a file the bucket lacks.
-5. A missing or corrupt state file fails the run (fail closed); `SEED=true` is the only way to
-   start a seed and `RECONCILE=true` rebuilds a lost state from the bucket. The base plan
-   treated a missing state as the seed and did not say what happens when the state cannot be
-   read.
-6. A refetch-storm guard: more than 10% of the tree changed with a state present fails the run
-   unless `FORCE=1`. Turns "dante restored from backup" and "truncated listing with exit 0"
-   from silent 132.99 GB refetches into decisions.
-7. `delete-objects` per-key `Errors` are parsed; the CLI exits 0 on them.
-8. `added` keys are never purged. R2's consistency page says a cached 404 can outlive the
-   upload; the answer is a cache rule that stores no 3xx or 4xx, not a purge. With the
-   default `CACHE: off` nothing is purged at all. This closes a base-plan open question.
-9. `smoke` never pipes a retried curl into `cmp`; curl cannot un-write a pipe on retry.
-10. The listing parser is specified against both rsync outputs (GNU thousands separators;
-    openrsync blank sizes on 525 lines) and fails closed on anything it cannot read, including
-    rsync's `\#NNN` control-character escapes.
-11. The trailing CRC64NVME checksum the CLI sends since 2.23.0 is named as the integrity
-    mechanism, with what is and is not verified about R2's acceptance of it.
-12. The `retry` task is not `internal` (so `task -x retry` can be exercised), and its
-    self-check is written out and was run.
-13. The purge pause during a seed with `CACHE` on is recommended at 0.4 s, not 0.3 s, for
-    margin under the 1,200/5 min token limit. With `CACHE: off` there is no purge stream.
-
-Unchanged and re-verified: curl's transient list (the current docs also include 522 and 524,
-which the base plan omitted; harmless), `Retry-After` compliance, the 1-second-doubling
-backoff, `--retry-max-time` semantics; rsync's exit codes from `errcode.h`; the
-`max connections` refusal text from `clientserver.c`; the 1,200/5 min block and its
-`retry-after`; R2's 1 write/s per key; the 6-hour job limit; the 60-day rule; cron delay at the
-top of the hour; concurrency's one-pending rule; the 14 GB documented disk; the subkey expiry
-2027-07-13.
+**R13. The run did not start.**
+```
+gh run list --workflow sync.yml --limit 3      # createdAt against the cron slot
+gh workflow view sync.yml                      # "disabled" means the 60-day rule or a manual stop
+```
+Less than an hour past the slot: normal, wait. One slot with no run: normal, wait for the next.
+Two consecutive slots with no run started: check the GitHub status page for an Actions
+incident; if the workflow is disabled, R11; otherwise dispatch by hand with
+`gh workflow run sync.yml`, which starts at once and is safe (the state model makes it the same
+run the cron would have started). Do not add an external trigger to compensate; the constraints
+forbid it and the hour's work is not lost, only late.
 
 ## Open questions
 
@@ -862,8 +850,8 @@ top of the hour; concurrency's one-pending rule; the 14 GB documented disk; the 
   versions? Cloudflare's page is silent.
 - Do incomplete multipart parts bill as storage during the 7 days before R2 expires them?
   Worst case is cents; unverified.
-- Is the exit code for `@ERROR` from the daemon 5 on the runner's rsync? The base plan says
-  verified from source; not re-verified here; the retry list would need no change if it were
+- Is the exit code for `@ERROR` from the daemon 5 on the runner's rsync? Inferred from
+  `clientserver.c` and `errcode.h`, not observed; the retry list would need no change if it were
   another transport code.
 - Would a WAF or bot setting on the zone challenge mirmon's probe of `/timestamp`?
   (`official-mirror-and-url.md`, `monitoring.md`.)

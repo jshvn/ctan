@@ -1,9 +1,9 @@
 # Full CTAN mirror: summary and decisions
 
-Entry point to the ten specification files in this directory, which expand
-[the base plan](../ctan-full-mirror-plan.md). Where the ten disagree, this file picks one
-answer and says why. Every number below comes from one of the eleven files; nothing new is
-claimed.
+Entry point to the ten specification files in this directory. Section 3 states every
+non-obvious design decision with its reason and the file that owns it; the owning file has
+the commands, the sources and the arithmetic. Every number here comes from one of those
+files.
 
 ## 1. The decision
 
@@ -15,13 +15,15 @@ operations. The pipeline stays one `Taskfile.yml` run hourly by GitHub Actions: 
 dante (7 s), diffs the listing against a 3 MB state file kept in the bucket, fetches only
 the delta in batches of at most 4 GB into the 14 GB runner, verifies the signed tlnet files
 against the pinned TeX Live key, uploads with `aws s3 cp`, and checkpoints the state after
-every batch, so any run can die anywhere and the next hour continues. Seeding is seven
-ordinary pull requests and one day of hourly runs (126 GB from dante, ~513k Class A, $0.98
-prorated storage). The edge cache stays off: the bill cannot exceed $0.36 per million GETs
-and no traffic this mirror can draw reaches a dollar. Two things could stop it: Cloudflare's
-CDN terms on serving large files from a Free zone (a reading of two documents, not a
-number; ask support before registering), and CTAN declining a mirror with no directory
-listings and no rsync (neither is a stated requirement; ask in the registration notes).
+every batch, so any run can die anywhere and the next hour continues. GitHub starts
+scheduled runs 15 to 45 minutes late and sometimes drops a slot; the design absorbs that
+rather than fighting it. Seeding is seven ordinary pull requests and one day of runs
+(126 GB from dante, ~513k Class A, $0.98 prorated storage). The edge cache stays off: the
+bill cannot exceed $0.36 per million GETs and no traffic this mirror can draw reaches a
+dollar. Two things could stop it: Cloudflare's CDN terms on serving large files from a
+Free zone (a reading of two documents, not a number; ask support before registering), and
+CTAN declining a mirror with no directory listings and no rsync (neither is a stated
+requirement; ask in the registration notes).
 
 ## 2. Headline numbers
 
@@ -30,210 +32,157 @@ listings and no rsync (neither is a stated requirement; ask in the registration 
 | Stored set | 496,149 objects, 132.99 GB (123.9 GiB); 5 objects over 4.995 GiB | [taskfile-architecture.md](taskfile-architecture.md), [seeding-and-migration.md](seeding-and-migration.md) |
 | Monthly cost | $1.86 storage (134 GB-month rounded, minus 10 free); operations $0 | [cost-estimates.md](cost-estimates.md#fixed-monthly-cost) |
 | Seed cost | ~513k Class A (free tier 1M); storage $0.98 if seeded on the 15th | [cost-estimates.md](cost-estimates.md#seed-month) |
-| Seed duration | 67 to 274 min of runner time; 8 hourly runs at `MAX_BATCHES=4` (P50 9 h, P90 11 h wall clock) or one dispatch of 1.5 to 5 h | [seeding-and-migration.md](seeding-and-migration.md#the-seed) |
+| Seed duration | 67 to 274 min of runner time; one dispatch of 1.5 to 5 h, or 8 hourly runs at `MAX_BATCHES=4` (about 9 to 11 h wall clock, plus 20 to 40 min of cron lateness per run) | [seeding-and-migration.md](seeding-and-migration.md#the-seed) |
 | Hourly run | ~30 s quiet, ~50 s at P99, ~2 min on the busiest file hour; a release day is three lone 6.8 GB batches of ~20 min each | [sync-with-dante.md](sync-with-dante.md#8-time-budget-of-an-hourly-run) |
+| Cron lateness | Scheduled runs start 15 to 45 min after the cron minute (one run in this repository started 39 min late; today's was 18+ min late); a slot can be dropped outright; the run never starts at its minute | [limits.md](limits.md), [monitoring.md](monitoring.md) |
 | Thinnest limit margin | 6-hour job during the seed (resumable by design); seed month uses ~52% of free Class A; everything hourly is under 3% of any limit | [limits.md](limits.md#8-consolidated-table) |
 | Storage ceiling | 175 GB and 600,000 objects, checked on the upstream listing before any fetch | [cost-estimates.md](cost-estimates.md#budget), [verification-and-security.md](verification-and-security.md#4-the-symlink-inflation-guard-and-the-storage-ceiling) |
 | Secrets | 6: the four today plus `CF_API_TOKEN`, `CF_ZONE_ID` | [caching.md](caching.md#token-and-secrets) |
 | Endpoints | 6: dante, R2, `ctan.ijosh.com`, `hc-ping.com`, `api.cloudflare.com`, `ctan.org` (mirmon page) | [monitoring.md](monitoring.md#6-mirmon) |
 
-## 3. Corrections to the base plan
+## 3. Design decisions
 
-Merged from every file's "Where this differs from the base plan"; one line each.
+Each stated on its own terms, with the reason and the file that carries the evidence.
 
-### Changes the design
+### Synchronising
 
-| Correction | Owner |
-|---|---|
-| State line must be `path TAB size TAB mtime`, path first: whole-line `comm` is wrong with the size first | taskfile-architecture, sync-with-dante |
-| Containers must be checked against the same run's tlpdb: fetch and verify `tlpkg/` first (2.9 MB into `RUN/`), upload it last, `cmp` the two | verification-and-security, taskfile-architecture, sync-with-dante |
-| "Every named container exists" is checked against the bucket after the run (state + delta − deletions), not dante's listing | verification-and-security |
-| A missing state file must not silently reseed 133 GB: refuse unless `SEED=true`; a corrupt one fails closed | taskfile-architecture, errors-and-issues |
-| Refetch-storm guard: a delta over 10% of the state fails the run unless `FORCE=1` (dante restored from backup, truncated listing with exit 0) | errors-and-issues |
-| `--ignore-missing-args` on the batch fetch; the state records only what landed; exit 23 on the listing means a dangling symlink upstream and must not fail the hour | errors-and-issues, sync-with-dante, taskfile-architecture |
-| No `-r` on the batch fetch: a listed path that became a directory would pull an unplanned subtree | sync-with-dante |
-| Listing times are in the client's zone; every rsync call runs with `TZ=UTC` or a laptop run re-uploads everything | sync-with-dante |
-| The runner's rsync prints digit separators and `0` sizes; openrsync prints blanks: pass `--no-h`, parse by anchoring on the date | sync-with-dante, limits, errors-and-issues |
-| `timestamp` and the root files form the final decision batch with `tlpkg/`, `timestamp` last; the base plan did not place `timestamp` | seeding-and-migration, sync-with-dante |
-| The "$8.96 ceiling" is not a ceiling: evictions are undocumented, 404s and decision files are uncached and linear in traffic | caching, cost-estimates |
-| The cache is an optional layer, off by default; the seed purges nothing | caching |
-| 404s are not stored under the rule, so added keys need no purge; PUT then purge, never purge then PUT; purge changed `archive/` keys before `tlpkg/` lands | caching |
-| Smart Tiered Cache is a persistent zone setting: `PATCH` with `Zone Settings Write`, set once; the base plan's `POST` per run is wrong | caching |
-| The entrypoint `PUT` creates a new ruleset version every call; `GET` and `PUT` only on change | caching |
-| Budget breaches should not fail the run: failing cannot reduce Class B and stales the mirror | monitoring |
-| One `aws.config` covers multipart; the per-file threshold override is unnecessary | limits, taskfile-architecture |
-| `retry_mode = standard`, not `adaptive` (experimental, process-wide throttle, nothing to adapt to) | errors-and-issues |
-| The seed need not re-put tlnet: with list-diff landing first, the state already holds it | seeding-and-migration, sync-with-dante |
-| The cache-rule PR lands after the seed, not before | seeding-and-migration |
-| `page` must be removed or moved in the expansion PR itself: CTAN's root `index.html` lands in seed batch 4 and the reconcile would fight `page` daily | seeding-and-migration, official-mirror-and-url |
-| CTAN's `index.html` links directory URLs, which are 404s on R2; a Single Redirect to `ctan.org/tex-archive` fixes it; the Worker option is closed (100k requests/day on Free is ~8 installs) | official-mirror-and-url |
-| Mirmon probes each mirror's own `/timestamp`, not `mirror.ctan.org`; CTAN's file is not epoch-first | monitoring, official-mirror-and-url |
-| `delete-objects` reports per-key errors inside a 200 with CLI exit 0; parse them | errors-and-issues, taskfile-architecture |
-| Keep the GitHub failure email as backstop; route alerts through healthchecks `/start` and `/fail` | monitoring |
-| `SECURITY.md` "only tlnet is signed" is wrong: tlcontrib and the ISO checksums are signed and verifiable; say which are checked | verification-and-security |
-| No pre-seed post to the maintainers' list: membership comes with registration; write to `ctan@ctan.org` | seeding-and-migration |
+- The mirror is a list-diff, never a local tree: one `rsync --list-only` of dante, one
+  `comm` against the listing the last run left in the bucket, one `rsync --files-from` per
+  batch, one `aws s3 cp --recursive` per batch. The runner has 14 GB and the tree is 133 GB;
+  the bucket is never listed in the hourly path. [sync-with-dante.md](sync-with-dante.md)
+- The state line is `path TAB size TAB mtime`, path first, `LC_ALL=C` sorted, because
+  whole-line `comm` mis-pairs lines otherwise and one sort then serves both the change diff
+  and the path-only deletion diff. [taskfile-architecture.md](taskfile-architecture.md#why-path-first)
+- The change key is size plus mtime to the second, rsync's own quick check; a same-size
+  same-second rewrite is invisible here as on every rsync mirror. [sync-with-dante.md](sync-with-dante.md#why-sizemtime-and-where-it-fails)
+- Every rsync call runs with `TZ=UTC` and `--no-h`, and the listing is parsed by anchoring
+  on the date column: rsync prints mtimes in the client's zone, GNU rsync prints digit
+  separators, openrsync prints blank sizes for zero-byte files. [sync-with-dante.md](sync-with-dante.md#line-format), [limits.md](limits.md#9-local-runs-on-the-developers-mac)
+- The batch fetch is `rsync -Lt --files-from --ignore-missing-args` with no `-r`: `-r`
+  would pull an unplanned subtree when a listed path has become a directory, and a path that
+  vanished between listing and fetch is skipped and left out of the state, which records
+  only what landed. The listing accepts exit 23 (a dangling symlink upstream); a fetch exit
+  23 is a real error. [sync-with-dante.md](sync-with-dante.md#the-flags-and-why), [errors-and-issues.md](errors-and-issues.md)
+- Batches hold at most 4 GB by listing size, in key order; a file over the cap is alone;
+  the decision batch (root files, tlnet root files, `tlpkg/`, then `timestamp` last of all)
+  is always the final batch, so a tlpdb never names a container the bucket lacks and
+  `timestamp` never claims an hour whose files are missing. [seeding-and-migration.md](seeding-and-migration.md#seed-ordering-within-the-tree), [sync-with-dante.md](sync-with-dante.md#5-the-consistency-model)
+- The state is written once per batch, after that batch's upload succeeded, as one
+  `PutObject`. Every write is idempotent, so a run that dies anywhere is at-least-once and
+  the next hour repeats at most one batch. [sync-with-dante.md](sync-with-dante.md#5-the-consistency-model)
+- A missing state file fails the run unless `SEED=true`, and a corrupt one fails closed,
+  because treating either as "empty bucket" would silently re-upload 133 GB. Recovery from
+  a lost state is `RECONCILE=true`, which rebuilds it from the bucket listing joined to
+  upstream for 497 Class A. [taskfile-architecture.md](taskfile-architecture.md), [errors-and-issues.md](errors-and-issues.md#1-failure-catalogue)
+- A delta over 10% of the state fails the run unless `FORCE=1`: that is the shape of dante
+  restored from backup or a truncated listing with exit 0, and it should be a decision,
+  never a refetch. [errors-and-issues.md](errors-and-issues.md#diff-comm-between-the-sorted-listing-and-the-state)
+- Deletions come from the diff and run after every batch, 1,000 keys per `DeleteObjects`,
+  with the per-key `Errors` array parsed because the CLI exits 0 on it. The bucket is listed
+  once a day in `reconcile`, and every bucket listing is re-sorted with `LC_ALL=C` because
+  R2 lists keys out of byte order. [taskfile-architecture.md](taskfile-architecture.md), [errors-and-issues.md](errors-and-issues.md)
 
-### Changes a number
+### Verifying
 
-| Correction | Owner |
-|---|---|
-| Stored set 496,149 / 132.99 GB, not 496,155 / 133.01: the six `update-tlmgr-r*` files are excluded today | taskfile-architecture, seeding-and-migration, sync-with-dante |
-| Operations bill in whole millions: "1,282k → $1.27" is $4.50; a third seed is $4.50 for the month, not $2.25 | cost-estimates |
-| Storage $1.86, not $1.84; seed month $0.98, not $0.92 | cost-estimates |
-| Average object 268 KB, not 244; 200 GB is ~746k objects, not 868k | cost-estimates |
-| 14 to 16 objects exceed today's 200 MB threshold, not 5; 7 exceed the 512 MB cacheable limit | cost-estimates, limits |
-| `tlmgr update` for `scheme-full` is ~417 GETs a month, not 100 to 150 | cost-estimates |
-| 365-day churn on the stored set is 82,592 files / 62.43 GB; the base table showed the no-alias tree | cost-estimates |
-| 523 to 525 listing lines have a blank size; the base plan's awk read their date as bytes | cost-estimates, limits, errors-and-issues |
-| Seed batches 30, not ~34 (24 packed, 5 lone, 1 decision); seed pulls 126 GB from dante, not 133 | seeding-and-migration, limits |
-| Dante is not one speed: 22.7 MB/s and 152 MB/s on the same day | seeding-and-migration |
-| rsync retry worst case ~40 min, not 15.5 (attempt timeouts were not counted) | errors-and-issues |
-| The AWS CLI does not retry a bare 429 in standard or adaptive mode | errors-and-issues |
-| Cloudflare origin timeout 125 s, not 100 | limits |
-| `systems/win32` is the real directory; `systems/windows` is the 23.64 GB alias | official-mirror-and-url, sync-with-dante, cost-estimates |
-| 27,262 directories once aliases are materialised, not 18,417; 21 root-hosted HTTPS mirrors, not "a dozen" | official-mirror-and-url |
-| Hour-slots with work: 276 of 727 in UTC, not 283 of 720 in PDT | sync-with-dante |
-| Purge propagation P50 ~250 ms; hostname, tag and prefix purge also exist on Free | caching |
-| Token needs `Zone → Analytics → Read` and `Zone Settings Read` as well | monitoring, caching |
-| "Free plan may serve large files via R2: verified" is overstated; unverified with residual risk | cost-estimates, limits |
-| Wikipedia's "6 TB/month" is uncited; the one measured figure is ftp.fau.de's 95 TB in 2018 | cost-estimates |
-| `cacheStatus` on `httpRequestsAdaptiveGroups` and the `actionType` vocabulary are unverified | monitoring |
+- The tlnet control files are fetched into `RUN/` and verified (sha512, `gpgv` with
+  `GOODSIG` and the pinned `VALIDSIG`, `.xz` match) at the start of any run whose delta
+  touches tlnet; every batch's containers are checked against that tlpdb; `tlpkg/` is
+  uploaded last and must `cmp` equal to the verified copy. Containers land in earlier
+  batches than the tlpdb, so no other tlpdb is ever the right reference. [verification-and-security.md](verification-and-security.md#2-the-delta-scoped-tlnet-verification)
+- "Every named container exists" is checked just before the decision batch against the
+  bucket as it will be (state plus this run's delta minus this run's deletions); the promise
+  is about what a client will fetch. A missing container fails the run. A one-GetObject diff
+  of the old tlpdb's checksums catches a container whose bytes changed upstream with the
+  same size and second. [verification-and-security.md](verification-and-security.md#the-five-checks-restated-for-a-delta)
+- tlcontrib's tlpdb is verified with a second pin and the TeX Live ISO checksums are
+  signature-checked and hashed when an ISO is in the delta; everything else on CTAN carries
+  no pinnable signature and is copied as served, and `SECURITY.md` says exactly which is
+  which. [verification-and-security.md](verification-and-security.md#every-index-a-client-trusts)
+- The storage guard runs on the upstream listing before any fetch: 175 GB and 600,000
+  objects, `timestamp` present, at least 90% of the state's line count. A release day adds
+  21 GB and stays under it. [verification-and-security.md](verification-and-security.md#4-the-symlink-inflation-guard-and-the-storage-ceiling), [cost-estimates.md](cost-estimates.md#budget)
+- tlnet's and tlcontrib's versioned containers are dropped in the normaliser. Nothing
+  requests them by that name; keeping them is +$0.09 a month and a second upload per
+  revision bump. [cost-estimates.md](cost-estimates.md#keeping-tlnets-versioned-containers), [taskfile-architecture.md](taskfile-architecture.md)
 
-### Cosmetic
+### Uploading
 
-Listing 6.9 s not 6.6; `scheme-full` 11,913 GETs not 11,919; versioned containers +$0.09 not
-$0.10; curl also retries 522 and 524; GraphQL 300 or 320 per 5 min; `split -a 3` needed for
-4,962 purge chunks; rsync exit 22 named as never-retry.
+- One `aws.config` carries `multipart_threshold = 4GB` and `multipart_chunksize = 512MB`.
+  The CLI's suffixes are binary, so 4 GiB sits below R2's 4.995 GiB single-part limit and
+  above the largest ordinary file (`protext.zip`, 1.14 GB); 13 parts of 512 MiB is 15
+  Class A per installer, five installers a year. [taskfile-architecture.md](taskfile-architecture.md#5-multipart-for-the-objects-over-4995-gib), [limits.md](limits.md#aws-cli-v2)
+- `retry_mode = standard`, `max_attempts = 10`: adaptive mode is documented as experimental,
+  its throttle is process-wide, and R2 publishes no per-bucket rate to adapt to. [errors-and-issues.md](errors-and-issues.md#aws-cli-v2)
+- rsync has no retry, so one `retry` task wraps its two calls and retries only the transport
+  exit codes 5, 10, 12, 30, 35 with jittered backoff; every `curl` line uses one `CURL`
+  variable that honours `Retry-After` and never retries 401 or 403. [errors-and-issues.md](errors-and-issues.md#2-retry-semantics-per-tool)
+- Operations bill in whole millions, so any Class A overage costs at least $4.50; the
+  hourly design lists the bucket only in the daily reconcile to stay far from that line at
+  any bucket size. [cost-estimates.md](cost-estimates.md#prices-re-verified-2026-08-26)
 
-## 4. Conflicts between the ten files, resolved
+### The storage set and the URL
 
-**a. Stored set.** 496,155 / 133.01 GB (cost-estimates, limits, verification, monitoring,
-official) vs 496,149 / 132.99 GB (taskfile, seeding, sync). **496,149 / 132.99 GB**: the
-six `update-tlmgr-r*` files are excluded by today's `fetch` and by every proposed
-normaliser, so the larger count describes a set nobody stores; every cost rounds the same.
+- Every symlink is stored as a copy (64 GB, $0.96 of the $1.86). Redirect rules for the
+  aliases would save $0.83 and create dashboard state that must track upstream renames; a
+  rule nobody remembers is a 404 nobody notices. `systems/win32` is the real directory and
+  `systems/windows` the 23.64 GB alias. [official-mirror-and-url.md](official-mirror-and-url.md#4-the-storage-set-and-the-aliases)
+- `.state/` and `.site/` are the two non-CTAN prefixes; every bucket listing excludes them,
+  and CTAN has no dot-prefixed root entry, so they cannot collide. [official-mirror-and-url.md](official-mirror-and-url.md#10-recommendation), [seeding-and-migration.md](seeding-and-migration.md#bucket-layout-during-and-after)
+- The landing page lives at `.site/index.html` behind the `/` rewrite; CTAN's own root
+  `index.html` is stored at `/index.html` like any file. The page at `/` is the one thing
+  that tells a human how to point `tlmgr` here, and it costs one key. [official-mirror-and-url.md](official-mirror-and-url.md#3-the-indexhtml-collision-readme-and-robotstxt)
+- Directory URLs redirect with one Single Redirect to `https://ctan.org/tex-archive<path>`:
+  R2 has no listings, CTAN's own page is better than an Apache index, and the rule's
+  `ne "/"` clause keeps the landing-page rewrite alive. [official-mirror-and-url.md](official-mirror-and-url.md#2-directory-indexes)
+- The hostname stays `ctan.ijosh.com` at the root, registered with the HTTP, FTP and rsync
+  fields blank; 21 listed mirrors have the same shape. [official-mirror-and-url.md](official-mirror-and-url.md#5-the-canonical-url)
 
-**b. Seed batch count.** 34 with a tlnet re-put (taskfile) vs 30 (limits 25+5; seeding
-24+5+decision). **30, with no tlnet re-put.** The list-diff PR lands before the expansion PR,
-so the state already holds tlnet and the expansion delta is 479,175 objects. Two missing-state
-mechanisms merge: a missing state fails unless `SEED=true` (taskfile's gate), and recovery
-from a lost state is `RECONCILE=true`, whose rebuild of the state as upstream ⋈ bucket is
-exactly sync-with-dante's bootstrap. Errors-and-issues' "NoSuchKey means seed" yields to the
-gate.
+### Caching
 
-**c. Multipart config.** 4 GB / 512 MB (taskfile) vs 5 GB / 1 GB (limits) vs a second
-config file with 500 MB chunks (seeding) vs per-file override (base). **One `aws.config`:
-`multipart_threshold = 4GB`, `multipart_chunksize = 512MB`.** The CLI's suffixes are binary,
-so limits' `5GB` is 5 GiB, above R2's 4.995 GiB single-part limit; 4 GiB sits safely between
-`protext.zip` (1.14 GB) and the installers, and 13 parts of 512 MiB is 15 Class A per
-installer, once a year. No second file, no override.
+- The edge cache is off. Uncached, the bill is $0.36 per million GETs after 10 million, free
+  below ~28 `scheme-full` installs a day and single-digit dollars at the traffic of one of the
+  largest mirrors on earth; a cache adds a purge step, a token scope and two correctness
+  windows and bounds nothing, since evictions are undocumented and 404s are never cached.
+  The trigger to switch on is Class B above 5 million for two months. [caching.md](caching.md#1-does-the-mirror-need-a-cache)
+- The zone's three rules (bypass-all cache rule, the `/` rewrite, the directory redirect)
+  live as JSON in `cloudflare/` and `task rules` `GET`s each phase and `PUT`s only when the
+  file's stamped hash differs, because every `PUT` mints a ruleset version. Smart Tiered
+  Cache is a persistent zone setting, set once by hand when the cache goes on. [caching.md](caching.md#7-configuration-as-code)
+- When the cache is on: 404s are never stored (`status_code_ttl` no-store from 3xx up), so
+  added keys need no purge; upload then purge, never the reverse; changed `archive/` keys are
+  purged before `tlpkg/` lands; Edge TTL is one day so a purge that silently failed is
+  bounded. [caching.md](caching.md#4-purge)
 
-**d. AWS retry mode.** `adaptive` (base, taskfile, limits, seeding PR 1) vs `standard`
-(errors-and-issues). **`standard`, `max_attempts = 10`.** Errors-and-issues is the owning
-file and the only one that examined it: adaptive is marked experimental, its throttle is
-process-wide, and R2 publishes no rate to adapt to.
+### Schedule, seed and monitoring
 
-**e. Purging added keys.** Never needed (caching: 404 not stored under the rule; limits:
-3-minute default TTL) vs purge added too (errors-and-issues, from R2's consistency page).
-**Never, and with the cache off nothing is purged at all.** The rule's `status_code_ttl` of
-`-1` for 3xx and up removes the case errors-and-issues describes; if the API rejects that
-shape (caching's open question 1), add `added` to the purge list, which costs one call an
-hour.
+- The cron is `41 * * * *`, drawn once and kept, as CTAN asks; GitHub starts it 15 to 45
+  minutes late and may drop a slot, so nothing in the design assumes the run begins at :41.
+  `concurrency: sync` without `cancel-in-progress` keeps one run going and one pending, so a
+  late run that overlaps the next slot queues it. `timeout-minutes` is 350 always: every
+  batch checkpoints and nothing can hang for hours, so a short timeout gains nothing.
+  `MAX_BATCHES=4` bounds each hourly run so it reports and pings. [taskfile-architecture.md](taskfile-architecture.md#7-the-workflows), [limits.md](limits.md#3-github-actions)
+- `report` prints the run's lateness (actual start minus the cron slot) every run, so the
+  drift is a number on the job page rather than a surprise. [taskfile-architecture.md](taskfile-architecture.md)
+- Two healthchecks checks: `sync` (cron schedule, `/start` at the head, `/fail` from the
+  workflow's failure step) and `reconcile` (period one day). The `sync` grace is 3 h: a
+  dropped slot, a 45-minute late start and a 55-minute run reach 160 min, with 20 min to spare; monitoring.md
+  carries the arithmetic. GitHub's failure email stays on
+  "only failed" as the one channel that fires when healthchecks itself is unreachable. [monitoring.md](monitoring.md#3-healthchecksio-design)
+- mirmon's 28-hour "fresh" band absorbs any lateness; an hour of drift on the `timestamp`
+  copy is cosmetic. A mirmon row reading "old" on two consecutive runs fails the run, since
+  it means the serving path differs from what `smoke` saw. [monitoring.md](monitoring.md#6-mirmon), [official-mirror-and-url.md](official-mirror-and-url.md#7-what-ctans-monitor-sees)
+- No budget number fails a run except the pre-upload storage and object guard; Class B is
+  caused by readers and a failed run cannot reduce it. The GraphQL `usage` step is deferred
+  (its fields are unverified and its numbers matter only for a cache that is off), so the
+  tool list stays as it is and `jq` comes with `usage` if `usage` ever comes. Month-to-date
+  operations are read from the R2 dashboard's Metrics tab monthly. [monitoring.md](monitoring.md#8-budget-alerting), [caching.md](caching.md#checkyml)
+- The seed is the hourly loop with a large delta, after six pull requests that each leave
+  the tlnet mirror green; the list-diff PR lands first and runs a week on tlnet scope, so the
+  state already holds tlnet and the seed pulls 126 GB. The dispatch path is preferred on the
+  seed day because a dispatched run starts at once, where eight hourly runs each lose 20 to
+  40 minutes to cron lateness. The cache PR comes after the seed. [seeding-and-migration.md](seeding-and-migration.md#the-migration-as-a-sequence-of-prs)
 
-**f. Seed execution.** One 6-hour dispatch with `timeout-minutes: 360` (base) vs hourly
-runs with `MAX_BATCHES=4` over ~8 runs (seeding) vs `timeout-minutes: 350` always
-(taskfile). **`MAX_BATCHES=4` as the hourly default, a `workflow_dispatch` input to raise it
-on the seed day, and `timeout-minutes: 350` always.** Checkpoints make a long run safe and
-nothing in the pipeline can hang for hours, so a low timeout gains nothing; the batch bound
-is what makes each run report and ping. Pause the healthchecks `sync` check for the seed day.
-
-**g. Landing page.** Remove `page`, serve CTAN's root `index.html` (taskfile, seeding) vs
-keep ours at `/.site/index.html` behind the retargeted Transform Rule with CTAN's at
-`/index.html` (official). **Official's option B.** It keeps the one page that tells a human
-how to point `tlmgr` here, costs one key and one line in the reconcile filter that `.state/`
-already needs, and still serves CTAN's page byte for byte at its own path.
-
-**h. Budget breaches.** `report` fails the run (cost-estimates) vs signal a separate
-`health` check (monitoring). **Neither fails the run for Class B; the pre-upload storage and
-object guard still fails it.** But see k: the GraphQL `usage` step is deferred, so the
-`health` check has no inputs yet and is not created (p).
-
-**i. Edge cache.** On from the start (base) vs `CACHE: off` with one bypass rule, switched
-on at 5M Class B a month for two months (caching). **Off.** Below ~28 `scheme-full`
-installs a day the cache saves nothing, and on it adds a purge step, a token scope and two
-correctness windows. The rules JSON, `task rules` and the token stay, so the switch is one
-line.
-
-**j. Cron minute.** `41 * * * *` (taskfile) vs "after :05" (errors-and-issues) vs mirmon at
-:03 (seeding). **41.** All three agree once read together: fixed, random, not 00 to 05.
-
-**k. Tools outside the list.** `jq` for GraphQL (monitoring); `python3 -m json.tool`
-(caching). **The tool line does not change; the design avoids both.** JSON syntax is checked
-by taskfile's `fromJson` lint. The GraphQL `usage` step is deferred: its numbers (Class B,
-hit ratio) matter only for a cache that is off, its fields are unverified, and the R2
-dashboard's Metrics tab gives the same totals monthly. If `usage` is ever adopted, add `jq`
-(already on the runner image) and say so in CLAUDE.md; `sed` over GraphQL JSON is not honest.
-
-**l. tlnet versioned containers.** Exclude (everyone) vs keep so `FILES.byname` never lies
-(official raises it). **Exclude, and exclude tlcontrib's 261 as well.** Nothing requests
-either name, `tlmgr` reads the tlpdb not `FILES.byname`, and the cost of keeping them is
-storage plus a second upload per revision bump for no reader. The 496,149 / 132.99 GB figure still counts tlcontrib's 261 (0.46 GB); with them out the set is ~495,900 objects / 132.5 GB, which changes no dollar figure.
-
-**m. Reserved prefixes.** `.state/` is needed by taskfile, sync, seeding, errors, monitoring
-(`history.csv`), verification and caching; `.site/` by official and, with g, by all of
-them. The CLAUDE.md line becomes: "Objects sit at CTAN's own paths from the bucket root.
-`.state/` and `.site/` are the mirror's own; every bucket listing excludes them, and CTAN has
-no dot-prefixed root entry, so they cannot collide."
-
-**n. Directory URLs.** 404 (base) vs a Single Redirect to `https://ctan.org/tex-archive<path>`
-(official). **The redirect.** One free rule as code beside the other two; its `ne "/"`
-clause keeps the landing-page rewrite alive. Fallback if the expression form is not on Free:
-404, as today.
-
-**o. `verify` with a delta.** Verification, taskfile and sync describe one mechanism: fetch
-`tlpkg/` into `RUN/` at the start of any run that touches tlnet, verify sha512, signature and
-pin there, check each batch's containers against that tlpdb, upload `tlpkg/` last and `cmp`
-it against the copy in `RUN/`. Three differences: taskfile checks "exists" against dante's
-listing at run start, verification and sync against the bucket after the run just before the
-decision batch (**take the latter**); sync drops the tlnet decision files and continues where
-the others fail the run (**fail the run**; simpler, and the mid-update case is an hour a few
-times a month); verification adds a one-GetObject diff of the old tlpdb's checksums to catch
-a same-size same-second change (**adopt**).
-
-**p. Healthchecks checks.** 1 today vs 3 (monitoring). **2: `sync` (cron, `/start`,
-`/fail`, grace 2 h) and `reconcile` (period 1 d).** `health` returns with `usage`. Mirmon
-"old" on two consecutive runs fails the run instead. The GitHub failure email stays on "only
-failed": it is the one channel that fires when healthchecks itself is unreachable. The
-workflow gains `if: failure()` → `task fail`, and CLAUDE.md's "workflows run one task" says
-so.
-
-**q. CLAUDE.md lines that change.** The opening paragraph (hourly, all of CTAN, 496k files,
-133 GB, largest 6.87 GB); "four files" (add `cloudflare/*.json`; `site/` moves to
-`.site/`); "Zero running cost" → "storage is the only bill, $1.86 at 133 GB, ceiling
-175 GB / 600k objects"; "workflows install tools and run one task, and `task fail` if it
-failed"; tools unchanged; endpoints gain `api.cloudflare.com` and `ctan.org`; the objects
-line (m); secrets six. Must-knows: "No versioned containers" gains tlcontrib and the
-normaliser; "Never `--size-only`" becomes "the state line carries upstream size and mtime";
-"Never `sync --delete`" becomes "the hourly path never lists the bucket; `LC_ALL=C sort`
-every listing"; "Single-part uploads" gains the five exceptions and the 4 GiB threshold;
-"`publish` uploads in a fixed order" becomes the batch rank table with the decision batch
-last; "`index.html` lives at the bucket root" becomes the `.site/` line; "A failed run is the
-only alert" gains the 2-hour grace and "a run stopping at `MAX_BATCHES` is not a failure";
-the `.xz` cache line becomes "the cache is off; `CACHE: on` is the purge PR". Verification
-item 5 becomes the delta form. "Verifying a change" becomes taskfile's section 8 table.
-
-Other conflicts found while reading, resolved the same way:
-
-- **r. `.prev` state copy** (errors-and-issues) vs none (taskfile): **none**; a corrupt
-  state fails closed and `RECONCILE=true` rebuilds it from the bucket for 497 Class A.
-- **s. `--partial` on the batch fetch** (errors-and-issues) vs dropped (taskfile, sync):
-  **dropped**; staging is emptied per batch and a partial file is never uploaded.
-- **t. `smoke` sample check**: byte `cmp` of copies set aside (caching, monitoring) vs
-  `Content-Length` against the listing (taskfile): **`Content-Length` while the cache is
-  off** (R2 is strongly consistent); the `cmp` ships with the `CACHE: on` PR.
-- **u. `rules` per run**: `POST` tiered cache each run (taskfile) vs `GET`, `PUT` on change,
-  tiered cache untouched until the cache is on (caching): **caching's**.
-
-## 5. The recommended design
+## 4. The recommended design
 
 **Pipeline.** `task sync` runs, in order and nothing in parallel: `rules` (three `GET`s, a
 `PUT` only when a `cloudflare/*.json` changed) → `list` (`TZ=UTC rsync -rL --list-only
@@ -253,7 +202,8 @@ decision batch, every named container in state + delta − deleted; `cmp` `tlpkg
 errors parsed, state rewritten) → `reconcile` (hour 03 UTC or `RECONCILE=true`: bucket
 listing ⋈ upstream becomes the state, extras deleted) → `smoke` (`/timestamp` and three
 uploaded keys by `Content-Length`, the tlpdb sha512 by `cmp`, decision files `DYNAMIC`,
-mirmon row) → `report` → `ping`. The workflow runs `task fail` on failure.
+mirmon row) → `report` (counts from `RUN/`, lateness, mirmon, days since last commit) →
+`ping`. The workflow runs `task fail` on failure.
 
 **State.** One object, `.state/applied.txt.xz`: the listing lines of what the bucket holds,
 path first, `LC_ALL=C` sorted, 3.1 MB, written once per batch after upload succeeds. Every
@@ -264,16 +214,22 @@ repeats at most one batch. `.state/history.csv` gets one line per successful run
 objects, 132.99 GB, every alias a copy, five objects multipart. `.state/` and `.site/` are
 the only non-CTAN keys.
 
-**Cache.** Off. Four rule files as code in `cloudflare/`, three applied while off: bypass-all cache rule, `/` →
+**Cache.** Off. Three rules as code in `cloudflare/`: bypass-all cache rule, `/` →
 `/.site/index.html` rewrite, directory-URL redirect to `ctan.org/tex-archive`. No purge
 step, no tiered cache. Flip `CACHE: on` (two-rule cache JSON, purge of changed and deleted
 keys per batch, `smoke` HIT assertions, Smart Tiered Cache) when the R2 dashboard shows
 Class B above 5M for two months or users far from the bucket complain.
 
-**Monitoring.** A failed run is the alert; healthchecks `sync` (hourly, `/start`, `/fail`,
-grace 2 h) and `reconcile` (daily) are the dead man's switches; GitHub's failure email stays
-as backstop. `report` prints counts from `RUN/`, never lists; the mirmon row; days since the
-last commit with a warning at 45. Monthly: the R2 Metrics tab and the bill.
+**Schedule.** `cron: '41 * * * *'`, `concurrency: sync`, `timeout-minutes: 350`,
+`MAX_BATCHES=4`, a `workflow_dispatch` input to raise the batch count. A run starts 15 to
+45 minutes after :41 and a slot may be dropped; the state model makes a late or missing run
+a two-hour gap and nothing more, and mirmon calls anything under 28 hours fresh.
+
+**Monitoring.** A failed run is the alert; healthchecks `sync` (`/start`, `/fail`, grace 3 h,
+sized for a late start plus the run plus one dropped slot) and
+`reconcile` (daily) are the dead man's switches; GitHub's failure email stays as backstop.
+`report` prints counts, never lists; the lateness; the mirmon row; days since the last commit
+with a warning at 45. Monthly: the R2 Metrics tab and the bill.
 
 **Migration.** Seven PRs, each leaving the tlnet mirror green:
 
@@ -282,14 +238,16 @@ last commit with a warning at 45. Monthly: the R2 Metrics tab and the bill.
 2. `refactor(sync): list-diff against a state file, tlnet scope` — path-first state, `SEED`
    gate, `plan`, `tlpdb`, `delete`, `reconcile`; `stale` and `guard` go. Run for a week.
 3. `ci(sync): hourly at :41` — `timeout-minutes: 350`, `MAX_BATCHES`, the dispatch input,
-   the two healthchecks checks, `task fail`.
+   the two healthchecks checks with their lateness-sized grace, `task fail`, lateness in
+   `report`.
 4. `feat(publish): one aws.config` — threshold 4 GiB, chunk 512 MiB; dead code until 6.
 5. `feat(rules): cloudflare rules as code` — bypass, rewrite to `.site/`, redirect; `page`
    writes `.site/index.html`; the two secrets. Must precede 6 so the page moves before CTAN's
    `index.html` arrives.
 6. `feat(sync): mirror the whole of CTAN` — `SOURCE`, bucket root, ceilings, tlcontrib and
-   ISO checks, README, SECURITY.md, CLAUDE.md. Rehearse with `max_batches: 1`; the seed is
-   the hourly runs that follow, or one dispatch. Write to `ctan@ctan.org` two days before.
+   ISO checks, README, SECURITY.md, CLAUDE.md. Rehearse with `max_batches: 1`; seed by
+   dispatch with the batch count raised, the hourly runs as the fallback. Write to
+   `ctan@ctan.org` two days before.
 7. `docs(mirror): register` — then the form, then watch mirmon at :03.
 
 Later, at the trigger: `feat(cache): CACHE on` with the purge step.
@@ -297,15 +255,24 @@ Later, at the trigger: `feat(cache): CACHE on` with the purge step.
 **After the change.** Secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
 `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`. Endpoints: `rsync.dante.ctan.org`, R2,
 `ctan.ijosh.com`, `hc-ping.com`, `api.cloudflare.com`, `ctan.org`. Tools unchanged.
+CLAUDE.md lines that change: the opening paragraph (hourly, all of CTAN, 496k files, 133 GB,
+largest 6.87 GB); the file list (`cloudflare/*.json`; `site/` becomes `.site/`); "Zero
+running cost" becomes "storage is the only bill, $1.86 at 133 GB, ceiling 175 GB / 600k
+objects"; "workflows run one task, and `task fail` if it failed"; endpoints and secrets as
+above; the objects line names the two reserved prefixes; the must-knows become the
+decisions in section 3 (versioned containers, the state line, the hourly path never listing
+the bucket, the multipart exception, the decision batch, `.site/`, the 60-day rule, cron
+lateness, and that a run stopping at `MAX_BATCHES` is a success).
 
-## 6. Open questions that survive
+## 5. Open questions that survive
 
 Flagged **STOP** if the answer could end the project.
 
 | Question | Cheapest experiment | Owner |
 |---|---|---|
 | **STOP** Does paid R2 usage on a Free zone satisfy the CDN terms' "Paid Services" clause for large files? | A written answer from Cloudflare support, before registering | cost-estimates, limits, official |
-| **STOP** Will CTAN list a mirror with no directory listings, no rsync, and directory URLs redirected to `ctan.org`? | Ask `ctan@ctan.org` with the pre-seed note; say it in the registration Notes | official, seeding |
+| **STOP** Will CTAN list a mirror with no directory listings, no rsync, directory URLs redirected to `ctan.org`, and a start that drifts 15 to 45 minutes past its minute? | Ask `ctan@ctan.org` with the pre-seed note; say it in the registration Notes | official, seeding |
+| Is an off-peak cron minute less late than one near the hour, and by how much? | The minute-of-hour histogram of `gh run list` after a month; compare against another repository's minute | sync-with-dante, monitoring |
 | Actual free disk on `ubuntu-latest` (14 GB documented; ~18 to 50 GB reported) | `df -h .` step in one run | limits, taskfile |
 | `rsync 3.2.7 --files-from` with 97k paths, and `--ignore-missing-args` exit 0 on a vanished path | The rehearsal batch; one run with a bogus path | seeding, taskfile |
 | Do concurrent `UploadPart` calls on one key trip R2's 1 write/s per key? | First multipart upload with `--debug` | limits |
@@ -321,10 +288,10 @@ Flagged **STOP** if the answer could end the project.
 | The bucket's region, for the city on the form | Dashboard | official |
 | Whether the dispatch input survives the seed | Decide at PR 7 | seeding |
 
-## 7. Reading order
+## 6. Reading order
 
 1. [cost-estimates.md](cost-estimates.md): what it costs, where the money could start, and the budget lines.
-2. [sync-with-dante.md](sync-with-dante.md): the list-diff, the contract with upstream, symlinks, the consistency argument.
+2. [sync-with-dante.md](sync-with-dante.md): the list-diff, the contract with upstream, symlinks, the consistency argument, real start times.
 3. [taskfile-architecture.md](taskfile-architecture.md): the Taskfile and workflows, task by task, with the data files.
 4. [verification-and-security.md](verification-and-security.md): what is signed on CTAN, the delta-scoped checks, the threat model.
 5. [errors-and-issues.md](errors-and-issues.md): every failure, every retry, the runbook.

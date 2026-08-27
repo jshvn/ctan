@@ -38,8 +38,6 @@ Computed from the listing (mtime as a proxy for when a file landed on CTAN):
 | Purge calls at 100 URLs per call | seed 4,962; largest batch 976; hourly 1 (average), 60 on the busiest hour seen | `(n+99)/100` |
 | Distinct directories | 24,953 | `awk -F/ '{NF--; print}' OFS=/ keys.txt \| sort -u \| wc -l` |
 
-The base plan's "~34 batches" is 30 when packed from the actual listing; "~23 files an hour"
-and "283 of 720 hour-slots" hold (284 today).
 
 ## 1. Cloudflare R2
 
@@ -117,8 +115,9 @@ From the compatibility page, checked operation by operation:
   `x-amz-bypass-governance-retention`, `x-amz-request-payer`,
   `x-amz-expected-bucket-owner`, none of which the CLI sends. `aws s3api delete-objects
   --delete file://...` with ≤1,000 keys per call is the batch path.
-- `cp --recursive`: plain `PutObject` per file (one generator, no destination listing, per
-  the base plan's reading of `subcommands.py`); nothing R2 lacks.
+- `cp --recursive`: plain `PutObject` per file. In AWS CLI v2's
+  `awscli/customizations/s3/subcommands.py`, `cp` has one file generator and never lists the
+  destination; `sync` is the command with two generators and a comparator. Nothing R2 lacks.
 - Checksums: `Content-MD5` and `x-amz-checksum-*` are marked unsupported on several
   operations. AWS CLI 2.36 (the runner's version) defaults to CRC-based flexible
   checksums on upload; R2 has accepted `aws s3 sync` uploads from this CLI line every day,
@@ -152,7 +151,7 @@ Sources: [Cache Rules](https://developers.cloudflare.com/cache/how-to/cache-rule
 | Transform Rules | "Active Transform Rules: 10" on Free; "Regex support: No" on Free and Pro | 1 (`/` to `/index.html`), or 0 if CTAN's own `index.html` becomes the front page | same | the rule must be a plain path match, not a regex |
 | Cacheable object size | "Free, Pro and Business customers have a limit of 512 MB. For Enterprise customers the default maximum cacheable file size is 5 GB" | 7 objects exceed it, served from R2 on every request | same | those 7 are 34.6 GB of the 133; each uncached GET of one is one Class B, egress free |
 | Default cached extensions | "Cloudflare only caches based on file extension and not by MIME type"; the list includes `ZIP GZ TAR ISO PDF DMG EXE BZ2 7Z ZST` and not `xz`, `lzma`, `pkg`, `tfm`, `vf`, `tex`, `sty`, `dtx` | a cache rule must mark the mirror "Eligible for cache" for the 31k `.xz`, 35k `.lzma`, 110k `.tfm` | | caching.md |
-| Default Edge TTL by status | 200/206/301: 120 minutes; 302/303: 20 minutes; 404/410: 3 minutes | | | a 404 cached before a key exists lives 3 minutes unless the rule's TTL applies to 404s too; answers the base plan's open question on purging added keys, caching.md |
+| Default Edge TTL by status | 200/206/301: 120 minutes; 302/303: 20 minutes; 404/410: 3 minutes | | | a 404 cached before a key exists lives 3 minutes unless the rule's TTL applies to 404s too; so purging an added key only matters inside that window; caching.md |
 | Edge TTL override bounds | the settings page gives no numeric minimum or maximum; Browser TTL "values available depend on your plan" | | | **unverified**: `PUT` the rule with the intended TTL and read the API error, if any |
 | Smart Tiered Cache | "Yes" on Free, Pro, Business, Enterprise; "the single closest upper tier for each of your website's origins" | 1 `POST` per run, idempotent | same | |
 | Purge by URL | Free: "800 URLs per second", "Max operations per request: 100", "applied per account", "thresholds for URLs are calculated using a moving average" | 0 with `CACHE: off` (the default); 1 call, ~25 URLs when on | 0 with `CACHE: off`; 4,962 calls, 496k URLs when on; at 3.3 calls/s that is 330 URLs/s | 2.4x under 800/s; a batch of 97,569 keys is 976 calls, ~5 minutes at the self-imposed pace |
@@ -161,9 +160,9 @@ Sources: [Cache Rules](https://developers.cloudflare.com/cache/how-to/cache-rule
 | Global API rate | "Client API per user/account token: 1200/5 minutes"; "Client API per IP: 200/second"; "all API calls for the next five minutes will be blocked, receiving a HTTP 429"; `retry-after` header "The number of seconds, rounded up, until more capacity is available"; "Some specific API calls have their own limits and are documented separately, such as ... Cache Purge APIs, GraphQL APIs, Rulesets APIs" | 3 rule calls + 1 or 2 analytics, + 1 purge when `CACHE: on` | 3, + 4,962 purges when `CACHE: on` | whether purge calls also count against the 1,200 is not stated. Counted conservatively: 3.3 calls/s is 990 per 5 minutes, under 1,200 with 21% to spare; at 3 calls/s exactly it is 900 |
 | GraphQL Analytics | "300 GraphQL queries over 5-minute window" per user (API page: "Max 320/5 min"); zone queries "up to 10 zones"; retention and record caps per node from the settings query | 1 or 2 | 1 or 2 | 150x; monitoring.md |
 | Rulesets API | "You should avoid making concurrent updates to the same ruleset. There are rate limits in place to prevent the same ruleset from being concurrently updated too many times" (numbers unpublished); "update the entire ruleset in a single operation" | 2 sequential `PUT`s of whole phases | same | one process, never concurrent |
-| Origin read timeout (524) | "the origin did not provide an HTTP response before the default 125 seconds Proxy Read Timeout"; "Enterprise customers can increase the 524 timeout up to 6,000 seconds"; write side "30 seconds Proxy Write Timeout ... cannot be adjusted" | R2 answers in ms | | applies to time to first byte, not transfer length; a 6.78 GB stream is not cut at 125 s. The base plan's "100-second" figure is the old default; no 500-second figure exists on any page fetched today |
+| Origin read timeout (524) | "the origin did not provide an HTTP response before the default 125 seconds Proxy Read Timeout"; "Enterprise customers can increase the 524 timeout up to 6,000 seconds"; write side "30 seconds Proxy Write Timeout ... cannot be adjusted" | R2 answers in ms | | applies to time to first byte, not transfer length; a 6.78 GB stream is not cut at 125 s. The page states 125 seconds, not the 100 seconds of older documentation; no 500-second limit exists on any page fetched today |
 | Free-plan bandwidth or request cap | none published. Terms: Cloudflare "reserves the right to disable or limit your access to or use of the CDN ... if you use or are suspected of using the CDN without such Paid Services to serve video or a disproportionate percentage of pictures, audio files, or other large files"; Developer Platform terms list "R2" in the Developer Platform and say Cloudflare "may temporarily limit your storage and/or the number of requests" under undue burden | | | whether an R2 bucket on the free tier is a "Paid Service" for this clause is a reading, not a fact; official-mirror-and-url.md and cost-estimates.md own the argument |
-| Health Checks, usage notifications | 0 on Free / Pro and above (base plan, not re-fetched) | | | monitoring.md |
+| Health Checks, usage notifications | 0 on Free / Pro and above (**unverified** today: the Health Checks and Notifications availability pages were not re-fetched) | | | monitoring.md |
 
 ## 3. GitHub Actions
 
@@ -181,9 +180,9 @@ Sources: [Limits](https://docs.github.com/en/actions/reference/limits),
 | `timeout-minutes` | "The maximum number of minutes to let a job run before GitHub automatically cancels it. Default: 360. If the timeout exceeds the job execution time limit for the runner, the job will be canceled when the execution time limit is met instead" | 55 | 360 | values above 360 do nothing on hosted runners |
 | Workflow run time | "35 days / workflow run" | one job | one job | n/a |
 | Concurrent jobs | Free plan "Total concurrent jobs: 20" (5 macOS) | 1 | 1 | `concurrency: sync` holds it to 1 by design |
-| Concurrency queue | "single (default): At most one job or workflow run can be pending in the concurrency group. When a new job or workflow run is queued, any existing pending job or workflow run in the same group is canceled and replaced"; "max: Up to 100 jobs or workflow runs can be pending ... once the queue is full, any additional runs are canceled"; "queue: max cannot be combined with cancel-in-progress: true" | 0 pending | during a 6-hour seed the cron fires 5 or 6 times: each new run cancels the pending one, so at most one waits, and it starts the moment the seed job ends | the right setting is the default. Each cancelled run is a run that would have recomputed the same delta; nothing is lost. The cancelled runs show as "cancelled" in the Actions list. Whether GitHub emails on cancelled scheduled runs is **unverified** (notification settings, not docs); monitoring.md |
-| Cron minimum and drift | "The shortest interval you can run scheduled workflows is once every 5 minutes"; "The schedule event can be delayed during periods of high loads of GitHub Actions workflow runs. High load times include the start of every hour. If the load is sufficiently high enough, some queued jobs may be dropped" | 1 per hour | | a fixed random minute away from :00 serves GitHub as well as CTAN; a dropped run is a two-hour gap, which is why the healthchecks grace must exceed one period; monitoring.md |
-| 60-day disablement | "In a public repository, scheduled workflows are automatically disabled when no repository activity has occurred in 60 days" | | | Dependabot's weekly bump is the activity; healthchecks catches the failure mode |
+| Concurrency queue | "single (default): At most one job or workflow run can be pending in the concurrency group. When a new job or workflow run is queued, any existing pending job or workflow run in the same group is canceled and replaced"; "max: Up to 100 jobs or workflow runs can be pending ... once the queue is full, any additional runs are canceled"; "queue: max cannot be combined with cancel-in-progress: true" | 0 pending normally; 1 pending when a late-starting run is still going at the next slot | during a 6-hour seed the cron fires 5 or 6 times: each new run cancels the pending one, so at most one waits, and it starts the moment the seed job ends | the right setting is the default (`cancel-in-progress` off). The same mechanism absorbs lateness: a run that starts 40 minutes late and takes 30 minutes overlaps the next slot, whose run is held pending and starts when the first ends; two slots collapse into one run and nothing is lost. Each cancelled run is a run that would have recomputed the same delta; nothing is lost. The cancelled runs show as "cancelled" in the Actions list. Whether GitHub emails on cancelled scheduled runs is **unverified** (notification settings, not docs); monitoring.md |
+| Cron minimum and lateness | "The shortest interval you can run scheduled workflows is once every 5 minutes"; "The schedule event can be delayed during periods of high loads of GitHub Actions workflow runs. High load times include the start of every hour. If the load is sufficiently high enough, some queued jobs may be dropped". Observed in this repository: the one scheduled `sync` run so far (cron `30 3 * * *`, already away from the top of the hour) was created at 04:09:16 UTC on 2026-08-26, 39 minutes after its slot; today's run was 18+ minutes late and not yet started when checked | 1 per slot, starting 15 to 45 minutes late; a slot may be dropped | seed runs start with the same lateness, ~20 to 40 minutes per hourly resume | no margin to design for: the run never starts at its cron minute. A quiet run (~40 s) still ends inside its hour after a 45-minute-late start; a release-day run (~40 min) overlaps the next slot and the next run queues behind it under `concurrency: sync`. The 6-hour job limit is unaffected. Mirror age as mirmon sees it is 1 to 2 hours plus lateness, inside the 28-hour band. Whether a minute outside :00 to :05 reduces lateness is **unverified** (the :30 slot was 39 minutes late). healthchecks period and grace: monitoring.md; cadence: sync-with-dante.md |
+| 60-day disablement | "In a public repository, scheduled workflows are automatically disabled when no repository activity has occurred in 60 days" | | | Dependabot's weekly bump is the activity; scheduled runs themselves are not; healthchecks catches the failure mode |
 | Default branch | "Scheduled workflows run on the latest commit on the default branch" | | | a PR cannot change the schedule until merged |
 | Runner spec (public repo, Linux x64) | "Linux 4 16 GB 14 GB x64" (CPU, RAM, SSD); `ubuntu-latest` = Ubuntu 24.04 ("OS Version: 24.04.4 LTS", "Image Version: 20260816.277.1") | | | |
 | Actual free disk | not documented by GitHub. Third-party reports for ubuntu-24.04 put the root filesystem at ~72 GB with ~18 to 22 GB free before any step ([free-disk-space](https://github.com/thiagokokada/free-disk-space), [runner-images #13189](https://github.com/actions/runner-images/issues/13189)) | peak 4 GB batch + ~130 MB of listings | one 6.87 GB installer alone | plan against the documented 14 GB: a 4 GB batch leaves 10 GB, an installer batch 7 GB. **Unverified** on this repo's runner: add `df -h /` as a step and read it once |
@@ -204,12 +203,12 @@ Sources: [Becoming a CTAN mirror](https://ctan.org/mirrors/register),
 | Limit | Value | Hourly | Seed | Margin |
 |---|---|---|---|---|
 | rsync daemon `max connections` on `rsync.dante.ctan.org` | **unverified**: no CTAN page states it; rsyncd.conf(5): "The default is 0, which means no limit", refused clients "receive a message telling them to try later" (`@ERROR: max connections (N) reached -- try again later`, client exits 5) | 2 connections, sequential | 31 connections, sequential | one connection at a time from this mirror. What would settle it: the daemon's MOTD on connect, or asking on the mirror maintainers' list |
-| Listing size and time | `rsync -rL --list-only`: 538,289 lines, 50.7 MB as text, 6.908 s wall clock today (`SCRATCH/rsync-time.txt`); `rsync -r --list-only`: 395,562 lines, 37.0 MB. Bytes on the wire are the compressed file list, not the text (base plan: ~19 MB, not re-measured) | 1 | 1 | the base plan's 6.6 s was a different run; 6.9 s today |
+| Listing size and time | `rsync -rL --list-only`: 538,289 lines, 50.7 MB as text, 6.908 s wall clock today (`SCRATCH/rsync-time.txt`); `rsync -r --list-only`: 395,562 lines, 37.0 MB. Bytes on the wire are the compressed file list, not the text (~19 MB on an earlier run today, not re-measured) | 1 | 1 | two runs today: 6.6 s and 6.9 s |
 | Register page requirements | "at least 60 GB of hard drive space free (100 GB leaves room to grow)"; "must synchronize with the primary CTAN node at least once per hour"; "Choose a random minute between 0 and 59" and "retain that minute permanently"; "You must mirror from the primary CTAN node" `rsync://rsync.dante.ctan.org/CTAN`; "we monitor mirrors to check that they are up to date. If your mirror falls behind then mirrors.ctan.org will not redirect to it, and we shall have to remove it from the official list"; HTTPS supported by the redirector since April 2021 | | | the 60 GB is about a disk the mirror does not have; the bucket holds 133 GB. official-mirror-and-url.md |
 | Apache `+Indexes` | appears in the page's example `Options` line, not as a requirement | | | directory URLs 404 on R2; official-mirror-and-url.md |
 | mirmon freshness | legend: "0 ≤ age ≤ 28 hours" fresh, "28h < age ≤ 52h" oldish; today "132 sites in 40 regions", "13 older than 2.2 days", "2 unreachable for more than 5 hours", "mean mirror age is 32 hours, std_dev 3.4 days, median 3 hours" | | | an hourly mirror sits at the median; a 24-hour outage is still "fresh" |
 | What mirmon reads | `/timestamp`; the file served by `mirror.ctan.org` begins "# This file is for administrative purposes only. The source CTAN of this site's material: irony.dante.de" | copied every run, uncached | | the key must never be cached; caching.md |
-| `timestamp` cadence | listing shows `timestamp` at `2026/08/26 17:02:01`, 186 bytes; `FILES.byname` and `FILES.last07days` at 16:20, `CTAN.sites` at 2026-08-25 16:21 | | | one observation today is consistent with the base plan's "every hour at :02"; two listings an hour apart would verify the cadence |
+| `timestamp` cadence | listing shows `timestamp` at `2026/08/26 17:02:01`, 186 bytes; `FILES.byname` and `FILES.last07days` at 16:20, `CTAN.sites` at 2026-08-25 16:21 | | | one observation today is consistent with an hourly touch at :02; two listings an hour apart would verify the cadence |
 | Blank-size entries | 525 lines in the dereferenced listing (479 in the symlink listing) print no size at all, e.g. `fonts/cm/utilityfonts/null.mf`; 395 are under `obsolete/systems`. `null.mf` is a known empty file, so these are zero-byte files that openrsync prints with an empty size column | | | a listing parser must accept an empty size as 0 (the awk and sed in Measurements do). GNU rsync on the runner prints `0` and, being ≥3.1.0, prints thousands separators ("The default is human-readable level 1", `--list-only` included): `gsub(",","",$2)` stays in the parser; sync-with-dante.md |
 
 ## 5. Tools
@@ -249,8 +248,8 @@ Source: [rsync(1) for 3.5.0](https://download.samba.org/pub/rsync/rsync.1),
   19/20 signals; 21 `waitpid()`; 22 "Error allocating core memory buffers"; **23** "Partial
   transfer due to error"; **24** "Partial transfer due to vanished source files"; 25
   `--max-delete`; **30** "Timeout in data send/receive"; **35** "Timeout waiting for daemon
-  connection". The base plan's retry set {5, 10, 12, 30, 35} matches; 22 (memory) is a
-  hard failure, correctly outside the set.
+  connection". The transport set that is safe to retry is {5, 10, 12, 30, 35}; 22 (memory)
+  is a hard failure outside it (errors-and-issues.md).
 
 ### AWS CLI v2
 
@@ -281,7 +280,7 @@ second and then for all forthcoming retries it doubles the waiting time until it
 minutes"; `--retry-max-time` "The retry timer is reset before the first transfer attempt.
 Retries are done as usual ... as long as the timer has not reached this given limit". 401
 and 403 are not transient, which is what the pipeline wants. `-d @file` has no documented
-size limit; a 100-URL purge body is ~8 KB. Every flag the base plan's `CURL` variable uses
+size limit; a 100-URL purge body is ~8 KB. Every flag the `CURL` variable in errors-and-issues.md uses
 (`--retry-connrefused`, `--retry-max-time`, `--fail-with-body`) exists in both versions.
 
 ### comm, sort, awk, split, xz, shasum, gpgv
@@ -326,13 +325,13 @@ Source: [Pinging API](https://healthchecks.io/docs/http_api/), [Pricing](https:/
 | Body | "the first 100 kB for each received ping" kept; `Ping-Body-Limit: 100000` header | one `timestamp` line if the body is used | | 500x |
 | Checks and log | Hobbyist "$0 / month", "Monitor 20 jobs", "100 log entries per job" | 1 or 2 checks | | 100 entries is ~4 days of hourly pings, the visible age history; monitoring.md |
 | Methods | "HEAD, GET, and POST" | GET | | |
-| Period / grace | "Period is the expected time between pings. Grace Time is the additional time to wait before sending an alert"; a 6-hour seed job with one ping at the end needs grace ≥ 6 h or an expected alert; monitoring.md | | | |
+| Period / grace | "Period is the expected time between pings. Grace Time is the additional time to wait before sending an alert"; the hourly period's grace must cover a 45-minute-late start plus the run plus one dropped slot, and a 6-hour seed job with one ping at the end needs grace ≥ 6 h or an expected alert; the arithmetic is in monitoring.md | | | |
 
 ## 7. Network
 
 | Quantity | Value | Source | Consequence |
 |---|---|---|---|
-| rsync from dante, observed | 6.79 GB in 299 s = 22.7 MB/s, ~400 KB average file, one TCP stream | base plan, job 32933376123 | not re-measured (no rsync to dante allowed today) |
+| rsync from dante, observed | 6.79 GB in 299 s = 22.7 MB/s, ~400 KB average file, one TCP stream | `sync` run of 2026-08-26 05:15 UTC (job 32933376123) | not re-measured (no rsync to dante allowed today) |
 | Runner NIC | "12,500" Mbps for `Standard_D4ads_v5` = 1.56 GB/s | Azure page | 69x the observed rsync rate: the bound is the single transatlantic rsync stream (latency, per-file round trips, dante's side), not the runner. **Unverified** directly; a `curl -o /dev/null -w '%{speed_download}' https://speed.cloudflare.com/__down?bytes=1000000000` step would show the runner's own ceiling |
 | Runner local disk | 250 MBps sequential read (D4ads_v5 temp disk) | Azure page | not a bound at 22.7 MB/s in or ~100 PutObject/s out |
 | R2 upload per connection | third-party benchmark: 25.6 MB/s at 1 GB single `PutObject`, 24 MiB/s aggregate at 256 KiB objects ([Tigris](https://www.tigrisdata.com/docs/overview/benchmarks/cloudflare-r2/)) | vendor benchmark, unverified here | with 32 concurrent streams the byte rate is not the seed's bound; the per-object latency (~170 ms in the same benchmark) is, which matches ~96 PutObject/s at 32-way (32 / 0.17 s ≈ 190/s ideal) |
@@ -373,11 +372,11 @@ the handling.
 | Origin read timeout | 125 s to first byte (write 30 s) | Error 524 | ms | ms | | 524 to the client | n/a (R2 is the origin) |
 | Zone upload cap | 100 MB on Free | Error 413 | 0 (S3 endpoint used) | 0 | n/a | 413 | n/a |
 | Free-plan bandwidth | none published; CDN terms clause on large files, Developer Platform exception | terms | user traffic | | a reading, not a number | account action | official-mirror-and-url.md |
-| GitHub job time | 6 h | Limits | ≤40 min | 4–6 h, resumable | thin by design | job killed; state as of last batch | seeding-and-migration.md |
+| GitHub job time | 6 h, counted from the actual start, so unaffected by lateness | Limits | ≤40 min | 4–6 h, resumable | thin by design | job killed; state as of last batch | seeding-and-migration.md |
 | `timeout-minutes` | default 360, capped at 6 h | Workflow syntax | 55 | 360 | | job cancelled | taskfile-architecture.md |
-| Concurrency pending queue | 1 pending (default), newest replaces | Concurrency | 0 | 1 | | older pending run cancelled | seeding-and-migration.md |
+| Concurrency pending queue | 1 pending (default), newest replaces | Concurrency | 0; 1 when a late run overlaps the next slot | 1 | | older pending run cancelled; an overlapping slot queues, never runs concurrently | seeding-and-migration.md, errors-and-issues.md |
 | Concurrent jobs | 20 on Free | Limits | 1 | 1 | 20x | queued | n/a |
-| Cron | ≥5 min; delayed at :00; may be dropped | Events | 1/h | 1/h | | run late or missing | monitoring.md |
+| Cron lateness | starts 15 to 45 min late (39 min observed 2026-08-26 04:09 for a 03:30 slot; 18+ min today); slots may be dropped | Events; observed here | 1 per slot, late | same | none needed: absorbed by `concurrency` and the healthchecks grace | late start; overlap queues one pending run; a dropped slot is a 2-hour gap | monitoring.md, sync-with-dante.md, errors-and-issues.md |
 | Schedule disablement | 60 days without activity | Events | | | Dependabot weekly | schedule off; healthchecks alerts | monitoring.md |
 | Runner disk | 14 GB documented; ~18–22 GB free reported | Runners, third party | ≤4.2 GB | 6.87 GB | 2x on 14 GB | `ENOSPC`, rsync exit 11, job fails | sync-with-dante.md |
 | Runner RAM | 16 GB | Runners | <300 MB | <1 GB expected | 16x+ | OOM kill | taskfile-architecture.md |
@@ -417,7 +416,7 @@ command in the second column. The design should rely on none of the GNU-only for
 | `sed` | BSD: `sed -i ''` needs the empty argument; `sed -i 's/a/b/' f` errors; `-E` works, `-r` also accepted; `\t` in the RHS is a literal `t`-tab on BSD (printed a tab today) but not portable | GNU: `sed -i`, `-E`/`-r` | stream through sed, never `-i` (as `page` does); use `-E`; put a literal tab in the script via `$'\t'` or awk |
 | `du` | `du -b` and `--apparent-size` fail; `du -sm` and `du -A -m` work | GNU has all | `du -sm` only (as today) |
 | `sort` | "2.3-Apple (199)", GNU-derived: `-S`, `--parallel`, `-s`, `-h`, `-V`, `-t $'\t' -k2,2n`, `-o same-file` all work | GNU 9.4 | always `LC_ALL=C`; `-o` for in-place |
-| `comm` | BSD: `--nocheck-order` fails ("illegal option"); unsorted input gives no warning, exit 0 | GNU: warns "file 1 is not in sorted order" on unsorted input (exit status on that condition **unverified**) | sort both sides with `LC_ALL=C sort` immediately before every `comm`; never rely on `comm` to detect order |
+| `comm` | BSD: `--nocheck-order` fails ("illegal option"); unsorted input gives no warning, exit 0 | GNU: warns "file 1 is not in sorted order" on unsorted input (exit status on that condition **unverified**) | sort both sides with `LC_ALL=C sort` immediately before every `comm`; never rely on `comm` to detect order and never pass `--nocheck-order` |
 | `awk` | BWK "20200816": no `gensub`, `strftime`, `systime`; `length()` counts bytes under `LC_ALL=C`; `printf "%d"` handles 1.4e11; `print > "a" b` needs parentheses around the target expression (the unparenthesised batch-plan line failed today) | `awk` is mawk by default; gawk may or may not be present (not in the image README) | POSIX awk only: no gawk extensions, `print > (expr)`, `LC_ALL=C` |
 | `grep` | this Mac's `grep` is **ugrep 7.8.4**; stock `/usr/bin/grep` is BSD grep without `-P`; `-o -E`, `-c`, `-F` fine | GNU grep with `-P` | `-E`, `-F`, `-c`, `-o` only; never `-P` |
 | `xargs` | BSD accepts `-r` (no-op: BSD never runs on empty input), `-I{}` fine | GNU: `-r` needed | keep `-r` (harmless on BSD, required on GNU), as today |
@@ -439,47 +438,6 @@ numeric size column. openrsync prints nothing for a zero-byte file, so
 `sed -E 's/^[^ ]+ +([0-9]+) +.../'` skips 525 lines and passes them through unchanged.
 The portable form takes `[0-9]*` and treats empty as 0 (Measurements). GNU rsync's commas
 are the mirror-image trap on the runner.
-
-## Where this differs from the base plan
-
-- **Batches.** "~34 batches" is 25 four-GB batches plus 5 lone files = 30 rsync
-  connections when packed from today's listing; the largest batch is 97,569 files (fonts).
-- **Multipart cost.** With the current `multipart_threshold = 200MB`, 16 objects go
-  multipart, not 5, and at the default 8 MiB chunk that is 4,676 parts. `multipart_threshold
-  = 4GB` and `multipart_chunksize = 512MB` (the CLI's suffixes are binary: 4 GiB and
-  512 MiB) make it 5 objects, 13 parts each, 75 Class A. The base plan's step 3 ("per-file
-  `multipart_threshold` override") is unnecessary: one `aws.config` covers every file.
-- **Retry mode.** `retry_mode = standard`, not the base plan's experimental `adaptive`;
-  `max_attempts = 10` keeps the ~3-minute per-call budget.
-- **Origin timeout.** Cloudflare's page now says 125 seconds, not 100; and it applies to
-  time to first byte, so the 6.78 GB ISO is not at risk. No "500-second" limit exists on
-  any page fetched.
-- **Blank sizes.** 525 listing lines carry no size on macOS; the base plan's awk
-  (`$1 ~ /^-/ {x=$2; ...}`) reads the date as the size for those lines. Its totals were
-  computed with that error; the effect is under 1 MB and the object count is unaffected.
-- **Concurrency queue.** Verified as the base plan describes, and GitHub now also offers
-  `queue: max` (up to 100 pending). The default is still right: a replaced pending run
-  costs nothing, and `queue: max` cannot combine with `cancel-in-progress`.
-- **Purge versus the 1,200 API limit.** The API page says cache purge has its own limits;
-  the base plan counts purges against both. Kept conservative here: 990 calls per 5
-  minutes at 3.3/s, 21% under 1,200 even if they count.
-- **Log drops.** Still undocumented by GitHub; the closest public thread caps streaming
-  logs near 4 MB. The base plan's rule (count from `RUN/`) stands.
-- **rsync exit 22.** Added to the "never retry" set explicitly: it is a memory failure,
-  not transport.
-- **`split` suffixes.** 4,962 purge chunks exceed the default two-letter suffix space;
-  `-a 3` is required. Not in the base plan.
-- **`comm` order checking.** BSD `comm` neither supports `--nocheck-order` nor warns; a
-  Taskfile that used `--nocheck-order` would fail locally. The base plan does not use it;
-  this file forbids it.
-- **Everything else** in the base plan's "Remote calls, limits and error handling",
-  "Self-imposed rates", "Disk" and runner facts re-verified today with the same numbers:
-  R2 4.995 GiB, 10,000 parts, 1 write/s per key, 1,024-byte keys; Cache Rules 10, Transform
-  Rules 10, 512 MB, Smart Tiered Cache on Free, purge 800 URLs/s and 100 per call, purge
-  everything 5/min; API 1,200 per 5 min with a 5-minute block; GraphQL 300 per 5 min;
-  6-hour job, 5-minute cron floor, 60-day disablement, 1 MiB summary, 14 GB disk, 4 vCPU,
-  16 GB; CTAN hourly and 60 GB; mirmon 28 h; healthchecks 5/min, 100 kB, 20 checks, 100
-  log entries; AWS CLI standard/adaptive semantics; curl transient set.
 
 ## Measurements
 
@@ -575,6 +533,8 @@ curl -sL https://mirror.ctan.org/timestamp | head -3                            
 - Edge TTL override minimum and maximum on Free: not on the settings page. Settled by the
   first `PUT` of `cloudflare/cache-rules.json`.
 - Actual free disk on the runner this repo gets: `df -h /` in one run.
+- Whether a cron minute outside :00 to :05 reduces start lateness: the only scheduled run
+  so far used :30 and started 39 minutes late; a month of `report` lateness figures settles it.
 - Dante's daemon `max connections` and rsync version: the MOTD or the maintainers' list.
 - Whether GitHub emails for scheduled runs cancelled by concurrency replacement during a
   seed (5 or 6 of them).
