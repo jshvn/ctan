@@ -84,8 +84,8 @@ tasks:
         # A phase with no ruleset yet is a 404, which -f turns into a curl error line; that
         # line is the answer, so it is left where it can be read.
         now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true; })
-        n=$(printf '%s' "$now" | grep -c '"expression"' || true)
-        case "$n:$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)" in
+        n=$(printf '%s' "$now" | grep -c '"ref"' || true)
+        case "$(printf '%s' "$now" | grep -c '"rules"' || true):$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)" in
           0:*) echo "$phase: empty; ${f##*/}.json goes on as is" ;;
           *:) echo "$phase: $n rule(s) NOT written by this repo; ${f##*/}.json is held back until they are gone" ;;
           *)  echo "$phase: $n rule(s) already from ${f##*/}.json" ;;
@@ -113,9 +113,12 @@ tasks:
         # || true keeps that from failing the assignment.
         now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true; })
         have=$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
-        n=$(printf '%s' "$now" | grep -c '"expression"' || true)
+        # Cloudflare leaves the rules key out of an empty phase, so its presence is the test;
+        # counting rules is by "ref", which every rule carries and the ruleset does not.
+        has=$(printf '%s' "$now" | grep -c '"rules"' || true)
+        n=$(printf '%s' "$now" | grep -c '"ref"' || true)
         if test "$have" = "$want"; then echo "$phase: $n rule(s), already ${f##*/}.json"; exit 0; fi
-        if test "$n" -gt 0 && test -z "$have"; then
+        if test "$has" -gt 0 && test -z "$have"; then
           echo "::warning::$phase holds $n rule(s) this repo did not write, so ${f##*/}.json was not applied. Run task cloudflare:get, fold what you want to keep into the file, and the next run applies it." >&2
           exit 0
         fi
