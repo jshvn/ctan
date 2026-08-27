@@ -39,6 +39,7 @@
 | D10 | `checkpoint` | split into `merge` (pure text, public) and `checkpoint` (merge + upload) for the same reason |
 | D11 | CI | stays native on `ubuntu-latest` (same tool versions as the image); the image is for local runs and a possible future Cloudflare Containers deployment |
 | D12 | Cloudflare JSON | four files written from the Rulesets API shape; they are validated by `lint` tonight and by the first live `rules` call (needs the secrets) in the morning |
+| D13 | Landing page | **none.** CTAN's own root `index.html` is a root file in the decision batch and is served at `/index.html` and, through the transform rule `/` → `/index.html`, at `/`, as on every mirror. T's `page` task, `site/index.html` and the `.site/` prefix are dropped; `.state/` is the only reserved prefix; `README.md` carries the usage text |
 
 ## File structure
 
@@ -49,7 +50,7 @@
 | `tools/docker/ctan/Dockerfile` | ubuntu:24.04 + the tool list + task + AWS CLI v2 |
 | `cloudflare/bypass-rules.json`, `cache-rules.json`, `transform-rules.json`, `redirect-rules.json` | the zone's rulesets as code |
 | `.github/workflows/sync.yml`, `check.yml` | hourly run; PR check |
-| `site/index.html`, `README.md`, `SECURITY.md`, `CLAUDE.md`, `.gitignore` | docs for the new system |
+| `README.md`, `SECURITY.md`, `CLAUDE.md`, `.gitignore` | docs for the new system; `site/index.html` is deleted |
 | `docs/superpowers/plans/2026-08-26-full-mirror.md` | this plan |
 
 ---
@@ -230,7 +231,11 @@ Expected: `412 run/T.yml`. (`run/` is ignored; `mkdir -p run` first.)
 
 Content = `run/T.yml` verbatim, with exactly these edits:
 1. In `vars:`, change `RUN: /tmp/ctan-run …` to `RUN: '{{.ROOT_DIR}}/run'` and its comment to `# run outputs; outside staging so nothing here is uploaded; git-ignored`.
-2. Insert the Task 1 vars (`IMAGE`, `ENGINE`, `RUNNER`) at the end of `vars:` and the Task 1 `image`/`run` tasks at the end of `tasks:`. Leave every other line as T wrote it.
+2. Insert the Task 1 vars (`IMAGE`, `ENGINE`, `RUNNER`) at the end of `vars:` and the Task 1 `image`/`run` tasks at the end of `tasks:`.
+3. Delete the `page` task entirely, delete the `- {task: page}` line from `sync`, and end `sync`'s `desc` at `-> ping`.
+4. In `reconcile`, change `grep -vE '^\.(state|site)/'` to `grep -vE '^\.state/'` and its `desc` to `Rebuild the state from a bucket listing, then delete keys that neither upstream nor .state/ owns`.
+5. In the `vars:` comment on `STATE`, and anywhere else `.site` appears in a comment, remove the `.site` mention; `.state/` is the only reserved prefix.
+Leave every other line as T wrote it.
 
 - [ ] **Step 3: Write `aws.config`** (Write tool)
 
@@ -248,8 +253,8 @@ s3 =
 
 - [ ] **Step 4: Dry-render inside the container**
 
-Run: `mkdir -p cloudflare && task run -- task --dry --force sync 2>&1 | tail -3; echo rc=$?`
-Expected: the last rendered line is the `page` upload to `s3://tlnet/.site/index.html`; `rc=0`.
+Run: `task run -- task --dry --force sync 2>&1 | tail -3; echo rc=$?; grep -c 'site' Taskfile.yml`
+Expected: the last rendered line is `ping`'s `curl … "$HEALTHCHECK_URL"`; `rc=0`; `0`.
 
 - [ ] **Step 5: Line budget**
 
@@ -623,10 +628,10 @@ git add .github/workflows && git commit -m "ci(sync): hourly runs with dispatch 
   "phase": "http_request_transform",
   "rules": [
     {
-      "description": "landing page: / serves .site/index.html; CTAN's own index.html stays at /index.html",
+      "description": "root: / serves CTAN's own index.html, as every mirror does",
       "expression": "(http.request.uri.path eq \"/\")",
       "action": "rewrite",
-      "action_parameters": {"uri": {"path": {"value": "/.site/index.html"}}}
+      "action_parameters": {"uri": {"path": {"value": "/index.html"}}}
     }
   ]
 }
@@ -836,10 +841,11 @@ git add Taskfile.yml && git commit -m "feat(retry): scale the backoff so the tas
 
 ---
 
-### Task 10: Docs and landing page
+### Task 10: Docs; delete the landing page
 
 **Files:**
-- Modify: `README.md`, `site/index.html`, `SECURITY.md`, `CLAUDE.md`
+- Modify: `README.md`, `SECURITY.md`, `CLAUDE.md`
+- Delete: `site/index.html`
 
 - [ ] **Step 1: `README.md`** (Write tool) — replace the whole file:
 
@@ -872,7 +878,9 @@ To go back to CTAN's mirror rotation: `tlmgr option repository ctan`.
 
 Any other CTAN path works the same way, for example
 `https://ctan.ijosh.com/macros/latex/contrib/hyperref.zip`. Directory URLs redirect to the
-matching page on ctan.org, because R2 serves files, not listings.
+matching page on ctan.org, because R2 serves files, not listings. The root,
+`https://ctan.ijosh.com/`, serves CTAN's own `index.html`, as every mirror does; this README
+is the mirror's documentation.
 
 ## How it works
 
@@ -902,12 +910,12 @@ behind the master.
 1. Fork [this repo](https://github.com/jshvn/ctan).
 2. Create an R2 bucket named `tlnet`, an API token with Object Read & Write scoped to it,
    and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`
-   and in `cloudflare/*.json`, and put your own links and text in `site/index.html`.
+   and in `cloudflare/*.json`.
 3. Add the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`;
    optionally `HEALTHCHECK_URL` (a healthchecks.io ping URL) and `CF_API_TOKEN` plus
    `CF_ZONE_ID` (a token with the zone's Cache Rules, Transform Rules and Single Redirect
-   edit permissions) so the landing page and directory redirects are applied from
-   `cloudflare/`.
+   edit permissions) so the `/` rewrite and the directory redirects are applied from
+   `cloudflare/`; without them, add a Transform Rule rewriting `/` to `/index.html` by hand.
 4. Actions -> sync -> Run workflow with `seed` checked and `max_batches` at 40. The first
    run uploads everything (about 133 GB, a few hours); every run after that pushes the
    hourly delta. Storage past R2's free 10 GB costs about $1.86 a month.
@@ -921,60 +929,12 @@ Pull requests are welcome.
 MIT licensed. Built by [Josh Vaughen](https://ijosh.com).
 ````
 
-- [ ] **Step 2: `site/index.html`** (Edit tool) — keep `<head>`, the CSS and the `<header>`; replace the `<meta name="description">` content with `An hourly, signature-verified mirror of all of CTAN. Point tlmgr or install-tl at https://ctan.ijosh.com/systems/texlive/tlnet/, or fetch any CTAN path from https://ctan.ijosh.com/.`; replace everything from the first `<p>A daily mirror` through the closing `</ol>` with:
+- [ ] **Step 2: Delete the landing page** (host)
 
-```html
-<p>An hourly mirror of all of <a href="https://ctan.org">CTAN</a> on Cloudflare R2, with every CTAN path at the root. About 496,000 files and 133 GB.</p>
-
-<h2>How to use</h2>
-
-<p>TeX Live and TinyTeX both use <code>tlmgr</code>:</p>
-
-<pre><code>tlmgr option repository https://ctan.ijosh.com/systems/texlive/tlnet/
-tlmgr update --self --all</code></pre>
-
-<p>For a fresh install, give the installer the same URL:</p>
-
-<pre><code>install-tl -repository https://ctan.ijosh.com/systems/texlive/tlnet/</code></pre>
-
-<p>To go back to CTAN's mirror rotation: <code>tlmgr option repository ctan</code>.</p>
-
-<p>Any other CTAN path works the same way, for example
-<a href="https://ctan.ijosh.com/macros/latex/contrib/hyperref.zip"><code>/macros/latex/contrib/hyperref.zip</code></a>.
-Directory URLs redirect to the matching page on ctan.org, because R2 serves files, not listings.</p>
-
-<h2>How it works</h2>
-
-<p>Every hour GitHub Actions lists CTAN's master, diffs the listing against the listing the previous run
-left in the bucket, fetches only the changed files in batches, verifies the signed TeX Live files
-(<code>texlive.tlpdb</code>, the installers and the <code>tlmgr</code> updaters, with the TeX Live key
-fingerprint pinned) and every package container against the tlpdb's checksums, and uploads. Every step
-is in the <a href="https://github.com/jshvn/ctan/blob/main/Taskfile.yml"><code>Taskfile.yml</code></a>.</p>
-
-<p><strong>Is it fresh?</strong></p>
-
-<pre><code>curl -s https://ctan.ijosh.com/timestamp</code></pre>
-
-<h2>Why use this?</h2>
-<p><code>tlmgr</code>'s default repository is CTAN's mirror rotation: every request lands on a different
-volunteer mirror, and any one of them can be unreachable, on a slow connection, behind on TLS, or a few
-days stale. This is one origin behind <a href="https://cloudflare.com/network">Cloudflare's network</a>,
-never more than about an hour behind the master.</p>
-
-<h2>Want your own?</h2>
-
-<ol>
-  <li>Fork <a href="https://github.com/jshvn/ctan">this repo</a>.</li>
-  <li>Create an R2 bucket named <code>tlnet</code>, an API token with Object Read &amp; Write scoped to it,
-    and a custom domain pointing at the bucket. Set <code>HOST</code> to that domain in <code>Taskfile.yml</code>
-    and in <code>cloudflare/*.json</code>, and put your own links and text in <code>site/index.html</code>.</li>
-  <li>Add the repository secrets <code>R2_ACCOUNT_ID</code>, <code>R2_ACCESS_KEY_ID</code>, <code>R2_SECRET_ACCESS_KEY</code>;
-    optionally <code>HEALTHCHECK_URL</code>, and <code>CF_API_TOKEN</code> plus <code>CF_ZONE_ID</code> so the landing page
-    and directory redirects are applied from <code>cloudflare/</code>.</li>
-  <li>Actions -&gt; sync -&gt; Run workflow with <code>seed</code> checked and <code>max_batches</code> at 40. The first run
-    uploads everything (about 133 GB, a few hours); every run after that pushes the hourly delta.</li>
-</ol>
+```bash
+git rm -q site/index.html && ls site 2>&1 | head -1
 ```
+Expected: `ls: site: No such file or directory` (git removes the empty directory).
 
 - [ ] **Step 3: `SECURITY.md`** (Edit tool)
 
@@ -1029,16 +989,16 @@ Everything is in a few files:
   `clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping -> page`,
   where `batches` runs `fetch -> verify -> publish -> purge? -> checkpoint` per batch.
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
-- `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/.site/index.html`,
-  directory URLs -> ctan.org). `rules` applies one only when its stamped sha256 differs.
+- `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/index.html`, directory
+  URLs -> ctan.org). `rules` applies one only when its stamped sha256 differs.
 - `tools/docker/ctan/Dockerfile`: the toolbox image with the runner's tool versions.
   `task run -- task <args>` runs any task inside it with the repo at `/work`.
 - `.github/workflows/sync.yml`: hourly at :41, `timeout-minutes: 350`, dispatch inputs
   `seed`, `reconcile`, `max_batches`, `cache`. `check.yml`: `task --dry --force sync` and
   `task lint` on pull requests.
-- `site/index.html`: the landing page, uploaded to `.site/index.html`.
 
-`README.md` is for users. Operational detail belongs here and in Taskfile comments.
+`README.md` is for users and is the mirror's only documentation page; the root URL serves
+CTAN's own `index.html`. Operational detail belongs here and in Taskfile comments.
 
 ## Constraints
 
@@ -1046,8 +1006,8 @@ Everything is in a few files:
 - Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `xz`, `curl`,
   `task`. Network endpoints are exactly dante, R2, the public domain, healthchecks.io and
   `api.cloudflare.com`.
-- Objects sit at the bucket root under CTAN's own paths. `.state/` and `.site/` are the two
-  reserved prefixes; CTAN has no dot-prefixed root entry, so they cannot collide.
+- Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
+  prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
 - Secrets are exactly six: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
   `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`. The last two are optional: without them
   `rules` is skipped.
@@ -1085,8 +1045,9 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 - **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :41 and a slot
   can be dropped. `clock` records the lateness, `report` prints it, and `reconcile` keys on
   the slot's hour (03 UTC), not the clock's.
-- **`index.html` at the root is CTAN's.** The landing page is `.site/index.html`, served at
-  `/` by the transform rule in `cloudflare/transform-rules.json`.
+- **`index.html` at the root is CTAN's**, stored and served like every other file; the
+  transform rule in `cloudflare/transform-rules.json` rewrites `/` to it. `README.md` is the
+  documentation; there is no landing page of our own.
 - **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
 - **A failed run is the only alert.** healthchecks.io emails when its grace passes without
   `ping`, which also catches GitHub disabling the schedule after 60 commit-free days.
@@ -1109,22 +1070,22 @@ lists the exact commands per task.
 - `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
   `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
 - `task run -- task smoke RUN=<dir> URL=file:///work/<dir>`; `task retry CMD='exit 5' RETRY_BASE=0`.
-- `publish`, `checkpoint`, `delete`, `rebuild`, `rules`, `page` need credentials; use a
-  scratch bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
+- `publish`, `checkpoint`, `delete`, `rebuild`, `rules` need credentials; use a scratch
+  bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
 ````
 
-- [ ] **Step 5: Render the page's date substitution** (host)
+- [ ] **Step 5: No stray references** (host)
 
 ```bash
-sed "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" site/index.html | grep -c 'Last updated 20'
+grep -rn 'site/index\|\.site/\|landing page' Taskfile.yml README.md SECURITY.md CLAUDE.md cloudflare .github | grep -v 'landing page of our own' | wc -l
 ```
-Expected: `1`.
+Expected: `0`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add README.md site/index.html SECURITY.md CLAUDE.md && git commit -m "docs(mirror): describe the hourly full-CTAN mirror"
+git add README.md SECURITY.md CLAUDE.md && git commit -m "docs(mirror): describe the hourly full-CTAN mirror; drop the landing page"
 ```
 
 ---
@@ -1173,7 +1134,7 @@ Expected: no error, under 480 lines, seven to nine commits.
 - [ ] **Step 2: Grep for forbidden words**
 
 ```bash
-grep -nE 'daily|replaces|was |previously|migrat|Co-Authored|generated by' Taskfile.yml CLAUDE.md README.md SECURITY.md site/index.html tools/docker/ctan/Dockerfile .github/workflows/*.yml | grep -v 'reconcile' 
+grep -nE 'daily|replaces|was |previously|migrat|Co-Authored|generated by' Taskfile.yml CLAUDE.md README.md SECURITY.md tools/docker/ctan/Dockerfile .github/workflows/*.yml | grep -v 'reconcile' 
 ```
 Expected: no hits (the word "daily" is allowed only next to `reconcile`).
 
@@ -1188,14 +1149,14 @@ git push -u origin josh/full-mirror && gh pr create --draft --title "feat(sync):
 
 ## Morning checklist (human; nothing here can be done by the overnight run)
 
-1. **Secrets.** Optional tonight: create a Cloudflare API token with *Zone → Cache Rules: Edit, Transform Rules: Edit, Single Redirect: Edit, Zone: Read* for `ijosh.com`; add `CF_API_TOKEN` and `CF_ZONE_ID` as repository secrets. Without them `rules` is skipped and the landing page moves only when you retarget the dashboard's Transform Rule from `/index.html` to `/.site/index.html` by hand. **Do one or the other before the seed's last batch lands** (CTAN's `index.html` overwrites the current landing page then). If you add the secrets, delete the dashboard's hand-made Transform Rule so the phase holds one rule.
+1. **Secrets (optional, no deadline).** The dashboard's existing Transform Rule already rewrites `/` to `/index.html`, which is exactly what the new design wants, so nothing breaks when CTAN's `index.html` replaces the old landing page in the seed's last batch. To manage the rules from `cloudflare/` instead: create a Cloudflare API token with *Zone → Cache Rules: Edit, Transform Rules: Edit, Single Redirect: Edit, Zone: Read* for `ijosh.com`, add `CF_API_TOKEN` and `CF_ZONE_ID` as repository secrets, and delete the hand-made Transform Rule so the phase holds one rule. Until then `rules` is skipped and directory URLs 404 instead of redirecting to ctan.org.
 2. **healthchecks.io.** Set the existing check to *cron `41 * * * *`, UTC, grace 3 h* (it is a daily check today).
 3. **Merge the PR**, then **Actions → sync → Run workflow** with `reconcile` ✓ and `max_batches` = 40 (one ~3–5 h run seeds 126 GB; `MAX_BATCHES=4` on the cron is the fallback, eight hours). Watch the first `df -h .` line and the `plan` line in the log; the Storage row in the job summary.
-4. After the seed: `curl -s https://ctan.ijosh.com/timestamp`; `curl -sI https://ctan.ijosh.com/macros/latex/contrib/hyperref.zip`; `curl -sI https://ctan.ijosh.com/macros/` (expect 302 to ctan.org); `curl -s https://ctan.ijosh.com/` (landing page).
+4. After the seed: `curl -s https://ctan.ijosh.com/timestamp`; `curl -sI https://ctan.ijosh.com/macros/latex/contrib/hyperref.zip`; `curl -sI https://ctan.ijosh.com/macros/` (302 to ctan.org once the redirect rule is applied); `curl -s https://ctan.ijosh.com/ | head -5` (CTAN's own index page).
 5. Registration, the Cloudflare CDN-terms question and the CTAN email are separate decisions; nothing in this plan depends on them.
 
 ## Self-review notes
 
-- Spec coverage: every task in T's graph is installed verbatim by Task 2; Tasks 3–5, 8–9 change `list`/`normalise`, `plan` (one line), `checkpoint`/`merge`, `delete` (status), `rules`, `retry`, and add `lint`, `image`, `run`. T §5 (`aws.config`), §7 (workflows), §8 (offline checks) map to Tasks 2, 7, 3–9. T's `purge`, `rebuild`, `reconcile`, `state`, `publish`, `page` are unchanged and covered by the dry render plus Task 11 where credentials allow.
+- Spec coverage: every task in T's graph is installed verbatim by Task 2; Tasks 3–5, 8–9 change `list`/`normalise`, `plan` (one line), `checkpoint`/`merge`, `delete` (status), `rules`, `retry`, and add `lint`, `image`, `run`. T §5 (`aws.config`), §7 (workflows), §8 (offline checks) map to Tasks 2, 7, 3–9. T's `purge`, `rebuild`, `reconcile`, `state`, `publish` are unchanged and covered by the dry render plus Task 11 where credentials allow. T's `page` task and `.site/` prefix are dropped (D13).
 - Names used across tasks: `normalise`, `merge`, `RETRY_BASE`, `IMAGE`, `ENGINE`, `RUNNER`, `image`, `run`, `lint`, `lint-one`, `RUN={{.ROOT_DIR}}/run` — consistent in Tasks 1–10 and in CLAUDE.md.
 - No placeholder text remains; the only "0000…" strings are the pre-stamp values Task 7 Step 3 replaces.
