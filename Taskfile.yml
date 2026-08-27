@@ -107,17 +107,23 @@ tasks:
       - mkdir -p {{.RUN}} {{.STAGING}}
       - task: retry
         vars: {CMD: '{{.RSYNC}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
-      # Regular files only. The size column may carry commas (rsync 3.x) or be blank for a
-      # zero-byte file (openrsync), so it is found from the fixed-width date, not by field.
-      # tlnet's versioned containers and update-tlmgr-r* are dropped here, so they are never
-      # fetched, never stored, and never in the state.
+      - {task: normalise}
+
+  normalise:
+    desc: RUN/listing.txt (rsync --list-only) to RUN/upstream.txt; regular files only, versioned containers dropped
+    set: [pipefail]
+    cmds:
+      # The size column may carry commas (rsync 3.x) or be blank for a zero-byte file
+      # (openrsync), so it is found from the fixed-width date, not by field. tlnet's and
+      # tlcontrib's versioned containers and update-tlmgr-r* are dropped here, so they are
+      # never fetched, never stored, and never in the state.
       - >-
         awk -v TL="{{.TL}}" '
           /^-/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
             path = substr($0, RSTART + RLENGTH); mtime = substr($0, RSTART + 1, RLENGTH - 2)
             size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
-            if (path ~ "^" TL "/archive/.*\\.r[0-9]+\\.tar\\.xz$" || path ~ "^" TL "/update-tlmgr-r") next
-            print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt
+            if (path ~ "^systems/texlive/(tlnet|tlcontrib)/archive/.*\\.r[0-9]+\\.tar\\.xz$" || path ~ "^" TL "/update-tlmgr-r") next
+            print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt \
         | LC_ALL=C sort > {{.RUN}}/upstream.txt
       # A truncated listing must never become a deletion list. CTAN is ~496k files.
       - test "$(wc -l < {{.RUN}}/upstream.txt)" -gt 400000
