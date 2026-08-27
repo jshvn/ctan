@@ -37,6 +37,24 @@ vars:
   # always built after our previous upload, so same-size bumps are caught. Never
   # add --size-only. aws.config keeps every upload a single PutObject.
   AWS_FLAGS: --no-progress
+  # Local runs happen inside tools/docker/ctan: Apple `container` when installed and
+  # running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
+  # image ships the runner's tool versions so the two agree.
+  IMAGE: ctan-sync
+  ENGINE:
+    sh: |
+      if [ -n "$ENGINE" ]; then echo "$ENGINE"
+      elif command -v container >/dev/null 2>&1 && container system status >/dev/null 2>&1; then echo container
+      elif command -v docker >/dev/null 2>&1; then echo docker
+      elif command -v container >/dev/null 2>&1; then echo container
+      else echo docker
+      fi
+  # Credentials pass by name from the host environment (an unset one arrives empty);
+  # nothing is written to disk. HOME=/tmp gives the AWS CLI somewhere to keep its cache.
+  RUNNER: >-
+    {{.ENGINE}} run --rm -i --user $(id -u):$(id -g) -w /work -v "{{.ROOT_DIR}}":/work
+    -e HOME=/tmp -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_ENDPOINT_URL -e AWS_REGION
+    -e HEALTHCHECK_URL -e CF_API_TOKEN -e CF_ZONE_ID {{.IMAGE}}
 
 env:
   AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
@@ -179,3 +197,17 @@ tasks:
         \`\`\`
         </details>
         EOF
+
+  image:
+    desc: Build the toolbox image (no-op while it exists; remove it to rebuild after a Dockerfile edit)
+    run: once
+    status: ['{{.ENGINE}} image inspect {{.IMAGE}} >/dev/null 2>&1']
+    cmds:
+      - '{{.ENGINE}} build -t {{.IMAGE}} tools/docker/ctan'
+
+  run:
+    desc: 'Run a command inside the image with the repo at /work: task run -- task --dry sync'
+    deps: [image]
+    cmds:
+      # Each argument re-quoted, so task run -- sh -c 'a; b' arrives intact.
+      - '{{.RUNNER}} {{range .CLI_ARGS_LIST}}{{shellQuote .}} {{end}}'
