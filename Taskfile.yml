@@ -194,11 +194,12 @@ tasks:
       # tlpkg/ (the tlpdb) and the root files (timestamp, FILES.*, CTAN.sites, README*,
       # index.html, tds.zip), is last, so nothing a client reads to decide what to fetch can
       # name a key that has not landed.
+      # A path that extends the previous one (x, x.sha512, x.sha512.asc) never starts a new batch, so verify always finds the file its signature names.
       - >-
         awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
           index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
           $2 > CAP { f = name(++n); print > f; close(f); next }
-          { if (sz + $2 > CAP) flush(); buf[++nb] = $0; sz += $2 }
+          { if (sz + $2 > CAP && index($1, prev) != 1) flush(); buf[++nb] = $0; sz += $2; prev = $1 }
           END { flush(); if (nd) { f = name(++n); for (i = 1; i <= nd; i++) print dec[i] > f; close(f) }
                 printf "%d lines in %d batches\n", NR, n }
           function name(i) { return sprintf("%s/batch-%04d.txt", DIR, i) }
