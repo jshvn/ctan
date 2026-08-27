@@ -94,11 +94,13 @@ tasks:
       RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect'
     cmds:
       - for: {var: RULESETS, as: R}
+        # CURL carries -f, so a phase with no ruleset yet (404) makes have empty; the || true
+        # keeps that from failing the assignment, and the PUT below then always runs.
         cmd: >-
           f=cloudflare/${R%%=*}; phase=${R#*=};
           want=$(sed '/"description": *"sha256:/d' "$f.json" | shasum -a 256 | cut -c1-64);
-          have=$({{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
-          | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
+          have=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
+          || true; } | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
           test "$have" = "$want" ||
           {{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json"
           --data-binary @"$f.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null
