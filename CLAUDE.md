@@ -5,8 +5,9 @@ Cloudflare R2, served at `https://ctan.ijosh.com/` with every CTAN path at the b
 About 496,000 objects and 133 GB; the largest file is 6.87 GB. Storage is the only bill,
 about $1.86 a month; the pipeline refuses to run past 200 GB upstream.
 
-The design and its evidence are in `docs/full-mirror/taskfile-architecture.md`; the other
-files in that directory are earlier drafts and are not authoritative.
+`Taskfile.yml` and its comments are the design. `docs/reference.md` holds the numbers
+behind it: the measured tree, the platform limits and their verification dates, the cost
+model, the healthcheck settings and the runbook.
 
 Everything is in a few files:
 
@@ -74,8 +75,10 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   transform rule in `cloudflare/transform-rules.json` rewrites `/` to it. `README.md` is the
   documentation; there is no landing page of our own.
 - **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
-- **A failed run is the only alert.** healthchecks.io emails when its grace passes without
-  `ping`, which also catches GitHub disabling the schedule after 60 commit-free days.
+- **A failed run is the only alert.** The check is cron `42 * * * *` UTC with a 3 h grace,
+  which absorbs one dropped slot plus a late full run; healthchecks.io emails when the grace
+  passes without `ping`, which also catches GitHub disabling the schedule after 60
+  commit-free days. Pause the check before a seed — a multi-hour run outlasts the grace.
 - The edge cache is off (`CACHE=off`: one bypass rule, no purges). `CACHE=on` swaps in
   `cache-rules.json` and purges changed keys per batch; switch it on only when R2 Class B
   reads exceed 5M a month for two months.
@@ -83,8 +86,7 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 ## Verifying a change
 
 Every offline check runs inside the toolbox image; `fixtures/` (git-excluded) holds a real
-dante listing and a signed `tlpkg/` tree. `docs/superpowers/plans/2026-08-26-full-mirror.md`
-lists the exact commands per task.
+dante listing and a signed `tlpkg/` tree.
 
 - `task run -- task --dry --force sync` renders the pipeline without touching the network.
 - `task run -- task lint` validates `cloudflare/*.json` and the cron minute.
@@ -98,3 +100,17 @@ lists the exact commands per task.
 - `publish`, `checkpoint`, `delete`, `rebuild`, `rules` need credentials; use a scratch
   bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
+
+Five hazards, each of which has cost an evening:
+
+- **A `>-` folded block keeps the newline** when a continuation line is indented further
+  than the lines around it, and the rendered shell then splits into two commands. End the
+  line with a backslash. `task --dry <task>` shows what actually renders.
+- **An unquoted YAML scalar breaks on a literal `: `** anywhere inside it, including in
+  embedded `sed` and `awk` text. Wrap the whole line in single quotes, doubling its own.
+- **`task run -- task <x>` exits 201 for any inner failure.** go-task does not propagate the
+  real code, so a test asserting a specific exit status can only assert "nonzero".
+- **`--contimeout` is daemon-only**, so `{{.RSYNC}}` rejects a local-path `SOURCE=` in
+  fixture tests. Override the whole var: `RSYNC='rsync --timeout=300 --no-h'`.
+- **`tlpdb`'s status gate reads all of `changed.txt`**, not the batch, so it runs on
+  essentially every real run. Only `verify`'s decision-batch branch keys on the batch.

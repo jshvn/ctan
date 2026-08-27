@@ -2,7 +2,7 @@
 
 [![sync](https://github.com/jshvn/ctan/actions/workflows/sync.yml/badge.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 [![license](https://img.shields.io/github/license/jshvn/ctan)](https://github.com/jshvn/ctan/blob/main/LICENSE)
-[![mirror](https://healthchecks.io/badge/8955b5d3-ba3b-4e8a-ac39-8501494333f5/otTXcui6-2.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
+[![mirror](https://healthchecks.io/b/2/f4ad55cc-4b2d-4cce-b133-aba5381d9e71.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 
 An hourly mirror of all of [CTAN](https://ctan.org) on Cloudflare R2, served at
 `https://ctan.ijosh.com/` with every CTAN path at the root. About 496,000 files and 133 GB.
@@ -43,11 +43,12 @@ curl -s https://ctan.ijosh.com/timestamp
 
 ## Why use this?
 
-`tlmgr`'s default repository is CTAN's mirror rotation: every request lands on a different
-volunteer mirror, and any one of them can be unreachable, on a slow connection, behind on
-TLS, or a few days stale. This is one origin behind
-[Cloudflare's network](https://cloudflare.com/network), never more than about an hour
-behind the master.
+I built this for myself. `mirrors.ctan.org` hands out a different volunteer mirror on every
+request, and sooner or later one is overloaded, stale, or unreachable — which breaks the CI
+that builds my documents. This is one hostname on
+[Cloudflare's network](https://cloudflare.com/network) of 300+ cities, a short and
+consistent hop wherever you are. It costs under $2 a month to run: R2 bills for storage and
+nothing for bandwidth, so traffic doesn't move the bill.
 
 ## Want your own?
 
