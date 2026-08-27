@@ -338,15 +338,25 @@ tasks:
           "{{.CF}}/purge_cache" -o /dev/null;
         wc -l < "$f" >> {{.RUN}}/purge.txt; sleep 0.3; done; }
 
+  merge:
+    desc: RUN/applied.new = the state minus B's paths, plus B's lines for the files that are in STAGING
+    set: [pipefail]
+    requires: {vars: [B]}
+    cmds:
+      # Only what landed enters the state: a path that vanished upstream between listing
+      # and fetch is dropped, so the state never names a key the bucket lacks. Called with
+      # deleted.txt (bare paths, empty staging) this is a pure drop. 0.1 s on 496k lines.
+      - (cd {{.STAGING}} && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > {{.RUN}}/landed.txt
+      - >-
+        awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
+        | cat - <(LC_ALL=C join -t "$(printf '\t')" {{.RUN}}/landed.txt {{.B}}) | LC_ALL=C sort > {{.RUN}}/applied.new
+
   checkpoint:
     internal: true
     requires: {vars: [B]}
     set: [pipefail]
     cmds:
-      # applied := applied minus these paths, plus these lines. 0.1 s on 496k lines.
-      - >-
-        awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
-        | cat - {{.B}} | LC_ALL=C sort > {{.RUN}}/applied.new
+      - {task: merge, vars: {B: '{{.B}}'}}
       - xz -T0 -c {{.RUN}}/applied.new > {{.RUN}}/applied.new.xz
       # One PutObject; the old file or the new one is in the bucket, never half.
       - aws s3 cp {{.AWS_FLAGS}} {{.RUN}}/applied.new.xz {{.S3}}/{{.STATE}}
@@ -355,7 +365,9 @@ tasks:
 
   delete:
     desc: Remove the keys in RUN/deleted.txt (1,000 per DeleteObjects call, free), purge them, drop them from the state
-    status: ['test ! -s {{.RUN}}/deleted.txt']
+    # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
+    # still name these containers, so they go only in the hour every batch has landed.
+    status: ['test ! -s {{.RUN}}/deleted.txt || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}}']
     set: [pipefail]
     cmds:
       - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.RUN}}/deleted.txt {{.RUN}}/del-
