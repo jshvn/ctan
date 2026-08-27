@@ -1,42 +1,32 @@
-# Mirror the TeX Live network repository (CTAN systems/texlive/tlnet) into a
-# Cloudflare R2 bucket. Runs the same way locally and inside GitHub Actions.
-#
-# R2 is reached through the AWS CLI, configured entirely by environment variables:
+# Mirror all of CTAN into a Cloudflare R2 bucket, hourly, from a list diff: dante's listing
+# against the listing the last run left in the bucket. Runs the same way locally and in
+# GitHub Actions. R2 is reached through the AWS CLI, configured by environment variables:
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   (R2 API token, Object Read & Write)
 #   AWS_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com   AWS_REGION=auto
 version: '3'
 
 vars:
-  # The CTAN master host. Secondary mirrors can lag it by a day; the master cannot.
-  SOURCE: rsync://rsync.dante.ctan.org/CTAN/systems/texlive/tlnet/
-  # A stalled sender fails in 5 minutes instead of holding the job to its 30-minute limit.
-  RSYNC_TIMEOUTS: --timeout=300 --contimeout=60
+  SOURCE: rsync://rsync.dante.ctan.org/CTAN/   # the master; the register page asks for it
+  HOST: ctan.ijosh.com                          # a fork changes this line
+  BUCKET: tlnet                                 # bucket name; objects sit at its root under CTAN's own paths
+  S3: s3://{{.BUCKET}}
+  URL: https://{{.HOST}}
+  STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream
+  RUN: '{{.ROOT_DIR}}/run'                      # run outputs; outside staging so nothing here is uploaded; git-ignored
   STAGING: '{{.ROOT_DIR}}/staging'
-  # The custom domain on the bucket. Every public URL derives from it; a fork changes this
-  # line and the text in site/index.html.
-  HOST: ctan.ijosh.com
-  # Objects live under CTAN's own path so https://ctan.ijosh.com/systems/texlive/tlnet/
-  # is a drop-in mirror URL and the rest of CTAN can be fronted later without moving them.
-  # Bucket names are per account, so a fork keeps the name tlnet.
-  PREFIX: systems/texlive/tlnet
-  BUCKET: s3://tlnet/{{.PREFIX}}
-  URL: https://{{.HOST}}/{{.PREFIX}}
-  # Landing page for https://ctan.ijosh.com/: site/index.html uploaded to the bucket root.
-  # A Cloudflare Transform Rule rewrites "/" to "/index.html".
-  SITE: https://{{.HOST}}
-  # Stage output that report reads back. Outside staging so it is never uploaded.
-  RUN: /tmp/tlnet-run
-  # TeX Live Distribution primary key, published at tug.org/texlive/verify.html
-  TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC
-  # R2 free tier is 10 GB-month, here as decimal GB in MiB (the smaller unit, so a
-  # billing-side GB never comes out larger than what we measured). guard prints the size
-  # every run, so the trend is in the log long before this trips.
-  LIMIT_MB: 9537   # 10 GB: never publish a tree that would bill
-  # aws s3 sync uploads when size differs or the local mtime is newer than the
-  # object's LastModified. rsync -t keeps upstream mtimes, and a revision bump is
-  # always built after our previous upload, so same-size bumps are caught. Never
-  # add --size-only. aws.config keeps every upload a single PutObject.
-  AWS_FLAGS: --no-progress
+  TL: systems/texlive/tlnet                     # the one signed subtree
+  TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC   # tug.org/texlive/verify.html
+  CRON_MINUTE: 41                               # the minute in sync.yml's cron; lint checks they agree
+  CEILING_GB: 175                               # refuse to run past this many decimal GB upstream
+  BATCH_GB: 4                                   # decimal GB per batch; a file over it is a batch by itself
+  MAX_BATCHES: '{{.MAX_BATCHES | default "4"}}' # batches per run; the rest wait for the next hour
+  SEED: '{{.SEED | default "false"}}'           # true: a missing state file means an empty bucket
+  RECONCILE: '{{.RECONCILE | default "auto"}}'  # true, false, or auto (the run whose slot is in hour 03 UTC); true also rebuilds a missing state
+  CACHE: '{{.CACHE | default "off"}}'           # off: one bypass rule, no purges; on: cache rule and purges
+  RSYNC: rsync --timeout=300 --contimeout=60 --no-h
+  CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
+  AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
+  CF: https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID
   # Local runs happen inside tools/docker/ctan: Apple `container` when installed and
   # running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
   # image ships the runner's tool versions so the two agree.
@@ -64,139 +54,372 @@ tasks:
     cmds: [{task: sync}]
 
   sync:
-    desc: fetch -> verify -> guard -> publish -> smoke -> report -> ping -> page; refuses to bill past 10 GB
+    desc: clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping
     cmds:
-      - {task: fetch}
-      - {task: verify}
-      - {task: guard}
-      - {task: publish}
+      - {task: clock}
+      - {task: rules}
+      - {task: list}
+      - {task: state}
+      - {task: rebuild}
+      - {task: diff}
+      - {task: plan}
+      - {task: tlpdb}
+      - {task: batches}
+      - {task: delete}
+      - {task: reconcile}
       - {task: smoke}
-      # report, then ping, then page: a healthchecks blip cannot lose the summary, and a broken
-      # landing page is one email on a fresh mirror.
       - {task: report}
       - {task: ping}
-      - {task: page}
 
-  fetch:
-    desc: Pull tlnet, dereferencing symlinks (tlmgr requests foo.tar.xz, never foo.r123.tar.xz)
-    set: [pipefail]   # tee must never mask a failed rsync
-    cmds:
-      - mkdir -p {{.STAGING}} {{.RUN}}
-      # -L turns each unversioned symlink into a real file; the exclude drops the
-      # versioned originals so nothing is stored twice.
-      - >-
-        rsync -rLt {{.RSYNC_TIMEOUTS}} --delete --delete-excluded --partial --stats
-        --exclude='*.r[0-9]*.tar.xz' --exclude='/update-tlmgr-r*'
-        {{.SOURCE}} {{.STAGING}}/ | tee {{.RUN}}/fetch.txt
-
-  verify:
-    desc: Refuse to publish a tree that is tampered, mid-update, missing or corrupt containers, or holding duplicates
-    dir: '{{.STAGING}}/tlpkg'
-    cmds:
-      # The tlpdb, the installers and the tlmgr updaters at the tree root each carry a
-      # signed sha512; nothing else outside archive/ is signed upstream. gpgv reads the
-      # keyring as a plain file, so nothing from the mirror is imported before it is
-      # authenticated. The keyring came from the same mirror as the signature, so pin the
-      # fingerprint: VALIDSIG's last field is the primary key that signed. GOODSIG as well,
-      # because gpgv reports an expired or revoked key as VALIDSIG with exit 0.
-      - >-
-        for f in texlive.tlpdb.sha512 ../install-tl*.sha512 ../update-tlmgr-latest.*.sha512; do
-        (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
-        gpgv --status-fd 1 --keyring {{.STAGING}}/tlpkg/gpg/pubring.gpg "$f.asc" "$f"
-        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}')
-        || exit 1; done
-      # tlmgr downloads texlive.tlpdb.xz, not texlive.tlpdb, and checks the signed sha512
-      # against what it decompresses, so the pair must be the same bytes.
-      - xz -dc texlive.tlpdb.xz | cmp - texlive.tlpdb
-      # A versioned container next to its unversioned copy would double storage.
-      - test -z "$(find ../archive -name '*.r[0-9]*.tar.xz' | head -1)"
-      # Every container the tlpdb names must exist and match its sha512, so a tree caught
-      # between a tlpdb update and its containers is never published. Source containers
-      # are <name>.source.tar.xz although the tlpdb field is srccontainerchecksum.
-      - >-
-        awk '/^name /{n=$2}
-        /^containerchecksum /{print $2"  ../archive/"n".tar.xz"}
-        /^doccontainerchecksum /{print $2"  ../archive/"n".doc.tar.xz"}
-        /^srccontainerchecksum /{print $2"  ../archive/"n".source.tar.xz"}'
-        texlive.tlpdb | shasum -a 512 -c --quiet
-
-  guard:
-    desc: Print the staging size and fail when it exceeds LIMIT_MB (du -sm is portable; blocks, so slightly over apparent size)
-    cmds:
-      - 'used=$(du -sm {{.STAGING}} | cut -f1); echo "staging is ${used} MiB of the {{.LIMIT_MB}} MiB limit"; test "$used" -le {{.LIMIT_MB}}'
-
-  page:
-    desc: Upload site/index.html with the sync date filled in to the bucket root
-    dir: '{{.ROOT_DIR}}'
-    set: [pipefail]   # a failed sed must never upload an empty page
-    cmds:
-      # Streamed, so the checked-in file is the only copy. Bucket root, outside the mirror
-      # prefix, so the stale listing never sees it. no-cache so the edge and browsers refetch
-      # the page every visit; the mirror files are not edge-cached at all.
-      - sed "s|<!--UPDATED-->|$(date -u '+%Y-%m-%d %H:%M UTC')|" site/index.html | aws s3 cp {{.AWS_FLAGS}} --content-type text/html --cache-control no-cache - s3://tlnet/index.html
-
-  publish:
-    desc: Containers first, then tlpdb, then deletions, so no client sees a tlpdb that names a missing file
-    set: [pipefail]   # tee must never mask a failed upload
+  clock:
+    desc: Record the run's start (RUN/start.txt) and its lateness against the cron slot (RUN/late.txt)
     cmds:
       - mkdir -p {{.RUN}}
-      - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}}/archive {{.BUCKET}}/archive | tee {{.RUN}}/publish.txt
-      # Never sync --delete. R2 lists a key after the keys it is a prefix of (install-tl after
-      # install-tl.zip.sha512.asc) while the CLI walks staging in byte order, so its merge-join
-      # emits both an upload and a delete for every such key and the delete can land last. The
-      # re-uploads that remain (15 keys) are harmless; deletions come from our own sorted diff.
-      - aws s3 sync {{.AWS_FLAGS}} {{.STAGING}} {{.BUCKET}} | tee -a {{.RUN}}/publish.txt
-      - aws s3 ls --recursive {{.BUCKET}}/ | sed 's/^[^ ]* *[^ ]* *[^ ]* //' > {{.RUN}}/remote.txt
-      - {task: stale}
-      # ponytail: one DeleteObject per key (free on R2, ~1 s each). Batch with s3api
-      # delete-objects if a release rollover ever removes thousands of files at once.
-      - xargs -r -I{} aws s3 rm s3://tlnet/{} < {{.RUN}}/stale.txt | tee -a {{.RUN}}/publish.txt
+      - date -u +%s > {{.RUN}}/start.txt
+      # Seconds since the last :CRON_MINUTE, and the hour that slot belongs to. Arithmetic on
+      # the epoch only, so it is the same on macOS and Linux. Scheduled runs start 15 to 45
+      # minutes after their slot; a run over an hour late reads as the next slot's.
+      - >-
+        awk -v m={{.CRON_MINUTE}} '{ late = ((int($1 / 60) % 60 - m + 60) % 60) * 60 + $1 % 60;
+          printf "%d %d\n", late, int(($1 - late) / 3600) % 24 }' {{.RUN}}/start.txt > {{.RUN}}/late.txt
 
-  stale:
-    desc: Keys in RUN/remote.txt (the bucket listing) that staging no longer has, written to RUN/stale.txt
+  rules:
+    desc: Put each ruleset in cloudflare/ on the zone, but only when its sha256 differs from the version there (every PUT is a new version)
+    vars:
+      # file=phase. CACHE=off swaps the cache rule for the one bypass rule. Smart Tiered
+      # Cache is a one-time zone setting (caching.md), not a call here.
+      RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect'
     cmds:
-      - cd {{.STAGING}} && find . -type f | sed 's|^\./|{{.PREFIX}}/|' | LC_ALL=C sort > {{.RUN}}/local.txt
-      - test -s {{.RUN}}/local.txt   # an empty tree must never empty the bucket
-      - LC_ALL=C sort {{.RUN}}/remote.txt | LC_ALL=C comm -13 {{.RUN}}/local.txt - > {{.RUN}}/stale.txt
+      - for: {var: RULESETS, as: R}
+        cmd: >-
+          f=cloudflare/${R%%=*}.json; phase=${R#*=};
+          want=$(shasum -a 256 "$f" | cut -c1-64);
+          have=$({{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
+          | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
+          test "$have" = "$want" ||
+          {{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json"
+          --data-binary @"$f" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null
+
+  list:
+    desc: List dante and normalise it to RUN/upstream.txt as "path TAB size TAB mtime", byte-sorted
+    set: [pipefail]
+    cmds:
+      - mkdir -p {{.RUN}} {{.STAGING}}
+      - task: retry
+        vars: {CMD: '{{.RSYNC}} -rL --list-only {{.SOURCE}} > {{.RUN}}/listing.txt'}
+      # Regular files only. The size column may carry commas (rsync 3.x) or be blank for a
+      # zero-byte file (openrsync), so it is found from the fixed-width date, not by field.
+      # tlnet's versioned containers and update-tlmgr-r* are dropped here, so they are never
+      # fetched, never stored, and never in the state.
+      - >-
+        awk -v TL="{{.TL}}" '
+          /^-/ && match($0, / [0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) {
+            path = substr($0, RSTART + RLENGTH); mtime = substr($0, RSTART + 1, RLENGTH - 2)
+            size = substr($0, 11, RSTART - 11); gsub(/[ ,]/, "", size)
+            if (path ~ "^" TL "/archive/.*\\.r[0-9]+\\.tar\\.xz$" || path ~ "^" TL "/update-tlmgr-r") next
+            print path "\t" size + 0 "\t" mtime }' {{.RUN}}/listing.txt
+        | LC_ALL=C sort > {{.RUN}}/upstream.txt
+      # A truncated listing must never become a deletion list. CTAN is ~496k files.
+      - test "$(wc -l < {{.RUN}}/upstream.txt)" -gt 400000
+
+  state:
+    desc: Fetch the state file to RUN/applied.txt; a missing one is rebuilt from the bucket with RECONCILE=true, or empty with SEED=true
+    cmds:
+      - mkdir -p {{.RUN}}
+      # aws s3 ls exits 1 when nothing matches and 0 when the key exists; any other code is
+      # a real error and must not be mistaken for a missing state.
+      - |
+        rc=0; aws s3 ls {{.S3}}/{{.STATE}} > /dev/null || rc=$?
+        case $rc in
+          0) aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.STATE}} {{.RUN}}/applied.txt.xz
+             xz -dc {{.RUN}}/applied.txt.xz > {{.RUN}}/applied.txt ;;
+          1) case "{{.SEED}} {{.RECONCILE}}" in
+               "true "*) : > {{.RUN}}/applied.txt ;;
+               *" true") touch {{.RUN}}/rebuild-now ;;
+               *) echo "no state at {{.STATE}}: pass RECONCILE=true to rebuild it from the bucket, or SEED=true if the bucket is empty" >&2; exit 1 ;;
+             esac ;;
+          *) exit $rc ;;
+        esac
+
+  rebuild:
+    desc: List the bucket and make the state exactly what is there (a lost state file, or the daily reconcile)
+    status: ['test ! -f {{.RUN}}/rebuild-now']
+    set: [pipefail]
+    cmds:
+      # aws s3 ls: "date time size key"; the key may hold spaces. R2 does not list in byte
+      # order (install-tl after install-tl.zip.sha512.asc), so sort before join and comm.
+      - >-
+        aws s3 ls --recursive {{.S3}}/
+        | awk '{ if (match($0, /^[^ ]+ +[^ ]+ +[0-9]+ /)) print substr($0, RLENGTH + 1) "\t" $3 }'
+        | LC_ALL=C sort > {{.RUN}}/bucket.txt
+      # A key is applied when the bucket has it at upstream's size; its mtime is upstream's.
+      - >-
+        LC_ALL=C join -t "$(printf '\t')" -o 1.1,1.2,1.3,2.2 {{.RUN}}/upstream.txt {{.RUN}}/bucket.txt
+        | awk -F'\t' -v OFS='\t' '$2 == $4 { print $1, $2, $3 }' > {{.RUN}}/applied.new
+      - xz -T0 -c {{.RUN}}/applied.new > {{.RUN}}/applied.new.xz
+      - aws s3 cp {{.AWS_FLAGS}} {{.RUN}}/applied.new.xz {{.S3}}/{{.STATE}}
+      - mv {{.RUN}}/applied.new {{.RUN}}/applied.txt
+      - rm -f {{.RUN}}/rebuild-now
+
+  diff:
+    desc: RUN/changed.txt (lines upstream has and the state lacks), deleted.txt (paths the state has and upstream lacks), paths.txt
+    cmds:
+      - LC_ALL=C comm -13 {{.RUN}}/applied.txt {{.RUN}}/upstream.txt > {{.RUN}}/changed.txt
+      - cut -f1 {{.RUN}}/upstream.txt > {{.RUN}}/paths.txt
+      - cut -f1 {{.RUN}}/applied.txt | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/deleted.txt
+
+  plan:
+    desc: Refuse a tree over CEILING_GB or a file the disk cannot hold; split changed.txt into RUN/batch-NNNN.txt
+    cmds:
+      - >-
+        awk -F'\t' -v gb={{.CEILING_GB}} '{ s += $2 }
+          END { printf "upstream: %d objects, %.2f GB, ceiling %d GB\n", NR, s / 1e9, gb; exit (s > gb * 1e9) }'
+        {{.RUN}}/upstream.txt
+      - mkdir -p {{.STAGING}} && find {{.STAGING}} -mindepth 1 -delete
+      - df -Pk {{.STAGING}}
+      # The largest single file must fit with 1 GiB to spare for RUN's text and the OS.
+      - >-
+        awk -F'\t' -v kb="$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')"
+          '$2 / 1024 > kb - 1048576 { print "no room for " $1 " (" $2 " bytes)"; bad = 1 } END { exit bad }'
+        {{.RUN}}/changed.txt
+      - rm -f {{.RUN}}/batch-*.txt
+      # Cumulative size from the listing; nothing is touched to plan. A file over the cap is
+      # a batch by itself and leaves the running batch alone. The decision batch, tlnet's
+      # tlpkg/ (the tlpdb) and the root files (timestamp, FILES.*, CTAN.sites, README*,
+      # index.html, tds.zip), is last, so nothing a client reads to decide what to fetch can
+      # name a key that has not landed.
+      - >-
+        awk -F'\t' -v OFS='\t' -v CAP=$(({{.BATCH_GB}} * 1000000000)) -v DIR={{.RUN}} -v TL="{{.TL}}" '
+          index($1, TL "/tlpkg/") == 1 || $1 !~ /\// { dec[++nd] = $0; next }
+          $2 > CAP { f = name(++n); print > f; close(f); next }
+          { if (sz + $2 > CAP) flush(); buf[++nb] = $0; sz += $2 }
+          END { flush(); if (nd) { f = name(++n); for (i = 1; i <= nd; i++) print dec[i] > f; close(f) }
+                printf "%d lines in %d batches\n", NR, n }
+          function name(i) { return sprintf("%s/batch-%04d.txt", DIR, i) }
+          function flush(  i, f) { if (!nb) return; f = name(++n)
+            for (i = 1; i <= nb; i++) print buf[i] > f; close(f); nb = sz = 0; split("", buf) }'
+        {{.RUN}}/changed.txt
+
+  tlpdb:
+    desc: When the delta touches tlnet, fetch its control files into RUN/tl and check the signed sha512 against the pinned key
+    status:
+      - 'test "$(grep -c "^{{.TL}}/" {{.RUN}}/changed.txt 2>/dev/null)" = 0'
+    set: [pipefail]
+    cmds:
+      - mkdir -p {{.RUN}}/tl
+      - printf '%s\n' tlpkg/texlive.tlpdb.xz tlpkg/texlive.tlpdb.sha512 tlpkg/texlive.tlpdb.sha512.asc tlpkg/gpg/pubring.gpg > {{.RUN}}/tl/files.txt
+      - task: retry
+        vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/tl/files.txt {{.SOURCE}}{{.TL}}/ {{.RUN}}/tl/'}
+      - xz -dkf {{.RUN}}/tl/tlpkg/texlive.tlpdb.xz
+      # The keyring is read as a plain file from the same mirror as the signature, so the
+      # pinned fingerprint is the only real check; GOODSIG too, because gpgv reports an
+      # expired or revoked key as VALIDSIG with exit 0.
+      - >-
+        cd {{.RUN}}/tl/tlpkg && shasum -a 512 -c texlive.tlpdb.sha512 &&
+        gpgv --status-fd 1 --keyring gpg/pubring.gpg texlive.tlpdb.sha512.asc texlive.tlpdb.sha512
+        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}'
+
+  batches:
+    desc: Work the first MAX_BATCHES of RUN/batch-NNNN.txt in name order; each commits before the next starts
+    vars:
+      BATCHES:
+        sh: ls {{.RUN}}/batch-*.txt 2>/dev/null | head -n {{.MAX_BATCHES}}
+    cmds:
+      - for: {var: BATCHES, split: "\n", as: B}
+        task: batch
+        vars: {B: '{{.B}}'}
+
+  batch:
+    internal: true
+    requires: {vars: [B]}
+    status: ['test -z "{{.B}}"']   # an empty delta loops once with an empty item
+    cmds:
+      - {task: fetch, vars: {B: '{{.B}}'}}
+      - {task: verify, vars: {B: '{{.B}}'}}
+      - {task: publish, vars: {B: '{{.B}}'}}
+      - {task: purge, vars: {B: '{{.B}}'}}
+      - {task: checkpoint, vars: {B: '{{.B}}'}}
+
+  fetch:
+    internal: true
+    requires: {vars: [B]}
+    preconditions:
+      - sh: test "$(df -Pk {{.STAGING}} | awk 'NR == 2 { print $4 }')" -gt "$(awk -F'\t' '{ s += $2 } END { print int(s / 1024) + 1048576 }' {{.B}})"
+        msg: "not enough free disk for {{.B}}"
+    cmds:
+      - find {{.STAGING}} -mindepth 1 -delete
+      - cut -f1 {{.B}} > {{.RUN}}/files.txt
+      # --files-from implies --relative (parents are created) and not -r; -L turns every
+      # symlink into its file. A path that vanished since the listing is skipped: its
+      # state line then names a key the bucket lacks, which the next hour deletes. No
+      # --partial: staging is emptied every batch, so there is nothing to resume, and a
+      # partial file must never reach the bucket.
+      - task: retry
+        vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/files.txt --ignore-missing-args {{.SOURCE}} {{.STAGING}}/'}
+
+  verify:
+    requires: {vars: [B]}   # public so it can be run by hand against a canned batch (section 8)
+    dir: '{{.STAGING}}'
+    cmds:
+      # Belt to list's braces: no versioned tlnet container may reach the bucket.
+      - test "$(cut -f1 {{.B}} | grep -c '^{{.TL}}/archive/.*\.r[0-9]*\.tar\.xz$')" = 0
+      # Every signed sha512 in this batch (root installers and updaters, the tlpdb) checks
+      # against the keyring already pinned by tlpdb. The while loop's status is the pipeline's.
+      - >-
+        cut -f1 {{.B}} | grep -E '^{{.TL}}/(tlpkg/texlive\.tlpdb|[^/]+)\.sha512$' | while IFS= read -r f; do
+        (cd "$(dirname "$f")" && f=$(basename "$f") && shasum -a 512 -c "$f" &&
+        gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f"
+        | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}')
+        || exit 1; done
+      # Every tlnet container in this batch must match the checksum the verified tlpdb gives it.
+      - >-
+        if test "$(grep -c '^{{.TL}}/archive/' {{.B}})" != 0; then
+        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { want[$1] = 1; next }
+          /^name /{split($0, a, " "); n = a[2]}
+          /^containerchecksum /{split($0, a, " "); p = TL "/archive/" n ".tar.xz"; if (p in want) print a[2] "  " p}
+          /^doccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".doc.tar.xz"; if (p in want) print a[2] "  " p}
+          /^srccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".source.tar.xz"; if (p in want) print a[2] "  " p}'
+        {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb | shasum -a 512 -c --quiet; fi
+      # The decision batch. The tlpdb it carries must be the one verified at the start of
+      # the run, the .xz tlmgr downloads must decompress to it byte for byte, and every
+      # container it names must be in the bucket after this run: the state, plus this
+      # batch, minus this run's deletions (verification-and-security.md).
+      - >-
+        test ! -f {{.TL}}/tlpkg/texlive.tlpdb || {
+        cmp {{.TL}}/tlpkg/texlive.tlpdb {{.RUN}}/tl/tlpkg/texlive.tlpdb &&
+        xz -dc {{.TL}}/tlpkg/texlive.tlpdb.xz | cmp - {{.TL}}/tlpkg/texlive.tlpdb &&
+        { cut -f1 {{.RUN}}/applied.txt; cut -f1 {{.B}}; } | LC_ALL=C sort -u
+        | LC_ALL=C comm -23 - {{.RUN}}/deleted.txt > {{.RUN}}/tl/after.txt &&
+        awk -v TL="{{.TL}}" '/^name /{n=$2}
+          /^containerchecksum /{print TL "/archive/" n ".tar.xz"}
+          /^doccontainerchecksum /{print TL "/archive/" n ".doc.tar.xz"}
+          /^srccontainerchecksum /{print TL "/archive/" n ".source.tar.xz"}' {{.TL}}/tlpkg/texlive.tlpdb
+        | LC_ALL=C sort | LC_ALL=C comm -23 - {{.RUN}}/tl/after.txt > {{.RUN}}/tl/missing.txt &&
+        test ! -s {{.RUN}}/tl/missing.txt; }
+
+  publish:
+    internal: true
+    requires: {vars: [B]}
+    set: [pipefail]   # tee must never mask a failed upload
+    cmds:
+      # cp --recursive never lists the destination: one PutObject per file, multipart only
+      # above aws.config's threshold. Keys are the paths under staging, which are CTAN's own.
+      # timestamp is what mirmon reads, so it goes up alone, after everything else.
+      - aws s3 cp {{.AWS_FLAGS}} --recursive --exclude timestamp {{.STAGING}}/ {{.S3}}/ | tee -a {{.RUN}}/publish.txt
+      - test ! -f {{.STAGING}}/timestamp || aws s3 cp {{.AWS_FLAGS}} {{.STAGING}}/timestamp {{.S3}}/timestamp | tee -a {{.RUN}}/publish.txt
+
+  purge:
+    internal: true
+    requires: {vars: [B]}
+    status: ['test "{{.CACHE}}" != on']
+    cmds:
+      # Only keys the edge may hold: paths in B that the state already knows (changed, or
+      # deleted), never new ones. Percent-encode everything outside the unreserved set and
+      # "/" (23 paths carry spaces, 69 carry ( ) [ ] { } & # > ~ $).
+      - >-
+        cut -f1 {{.B}} | LC_ALL=C comm -12 - <(cut -f1 {{.RUN}}/applied.txt)
+        | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+          { out = ""; for (j = 1; j <= length($0); j++) { c = substr($0, j, 1)
+              out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) }
+            print "{{.URL}}/" out }' > {{.RUN}}/urls.txt
+      # 100 URLs per call; the sleep keeps it under 800 URLs/s. A failed call fails the run.
+      - >-
+        rm -f {{.RUN}}/purge-*; test ! -s {{.RUN}}/urls.txt || { split -l 100 -a 5 {{.RUN}}/urls.txt {{.RUN}}/purge-;
+        for f in {{.RUN}}/purge-*; do
+        awk 'BEGIN { printf "{\"files\":[" } { printf "%s\"%s\"", (NR > 1 ? "," : ""), $0 } END { print "]}" }' "$f"
+        | {{.CURL}} -X POST -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @-
+          "{{.CF}}/purge_cache" -o /dev/null;
+        wc -l < "$f" >> {{.RUN}}/purge.txt; sleep 0.3; done; }
+
+  checkpoint:
+    internal: true
+    requires: {vars: [B]}
+    set: [pipefail]
+    cmds:
+      # applied := applied minus these paths, plus these lines. 0.1 s on 496k lines.
+      - >-
+        awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
+        | cat - {{.B}} | LC_ALL=C sort > {{.RUN}}/applied.new
+      - xz -T0 -c {{.RUN}}/applied.new > {{.RUN}}/applied.new.xz
+      # One PutObject; the old file or the new one is in the bucket, never half.
+      - aws s3 cp {{.AWS_FLAGS}} {{.RUN}}/applied.new.xz {{.S3}}/{{.STATE}}
+      - mv {{.RUN}}/applied.new {{.RUN}}/applied.txt
+      - find {{.STAGING}} -mindepth 1 -delete
+
+  delete:
+    desc: Remove the keys in RUN/deleted.txt (1,000 per DeleteObjects call, free), purge them, drop them from the state
+    status: ['test ! -s {{.RUN}}/deleted.txt']
+    set: [pipefail]
+    cmds:
+      - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.RUN}}/deleted.txt {{.RUN}}/del-
+      # Quiet mode returns only errors, and the CLI exits 0 even then, so grep for them.
+      - >-
+        for f in {{.RUN}}/del-*; do
+        awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
+             printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f"
+        > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
+        | { test "$(grep -c Errors)" = 0; }; done
+      - {task: purge, vars: {B: '{{.RUN}}/deleted.txt'}}
+      - {task: checkpoint, vars: {B: '{{.RUN}}/deleted.txt'}}
+
+  reconcile:
+    desc: Rebuild the state from a bucket listing, then delete keys that neither upstream nor .state/ owns
+    status:
+      - 'test "{{.RECONCILE}}" = false || { test "{{.RECONCILE}}" = auto && test "$(cut -d" " -f2 {{.RUN}}/late.txt)" != 3; }'
+    cmds:
+      - touch {{.RUN}}/rebuild-now
+      - {task: rebuild}
+      - cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/' | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/deleted.txt
+      - {task: delete}
 
   smoke:
-    desc: Read texlive.tlpdb.sha512 back through the public URL; proves the upload landed and the domain serves it
+    desc: Read /timestamp and a sample of this run's keys back through the domain; sizes must match the listing, the tlpdb sha512 must match the verified copy
     cmds:
-      - curl -fsS -m 30 {{.URL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.STAGING}}/tlpkg/texlive.tlpdb.sha512
-
-  ping:
-    desc: Dead man's switch; healthchecks.io emails when a day passes without this (skipped if HEALTHCHECK_URL is unset)
-    cmds:
-      - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
+      - >-
+        { echo timestamp; grep -h '^upload:' {{.RUN}}/publish.txt 2>/dev/null | sed 's|^upload: .* to s3://{{.BUCKET}}/||' | head -3; }
+        | while IFS= read -r k; do
+        want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' {{.RUN}}/upstream.txt);
+        got=$({{.CURL}} -I "{{.URL}}/$k" | awk 'tolower($1) == "content-length:" { sub(/\r/, "", $2); print $2 }');
+        echo "$k: $got bytes (listing: $want)"; test "$got" = "$want" || exit 1; done
+      - >-
+        test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
+        {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512
 
   report:
-    desc: Append the run summary to the Actions job page (stdout elsewhere) from the fetch and publish output in RUN
-    silent: true   # do not echo the heredoc into the job log
+    desc: Append the run summary to the Actions job page (stdout elsewhere) from the counts in RUN
+    silent: true
     cmds:
-      # rs: one number from the rsync --stats block. mb: bytes with commas to MB. n: aws s3 sync lines by verb.
       - |
-        rs() { sed -n "s/^$1: *\([0-9,]*\).*/\1/p" {{.RUN}}/fetch.txt; }
-        mb() { awk -v b="$1" 'BEGIN { gsub(",", "", b); printf "%.1f MB", b / 1e6 }'; }
-        n() { grep -c "^$1:" {{.RUN}}/publish.txt || true; }
+        n() { test -f "$1" && wc -l < "$1" || echo 0; }
         cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
         ## Sync succeeded, $(date -u '+%Y-%m-%d %H:%M UTC')
 
-        | Mirror | $(sed -n 's/^Number of files: .*reg: \([0-9,]*[0-9]\).*/\1/p' {{.RUN}}/fetch.txt) files, $(mb "$(rs 'Total file size')") at [{{.URL}}/]({{.URL}}/) |
+        $(paste {{.RUN}}/start.txt {{.RUN}}/late.txt | awk -v m={{.CRON_MINUTE}} -v ev="${GITHUB_EVENT_NAME:-local}" '{ printf "Started %02d:%02d UTC", int($1 / 3600) % 24, int($1 / 60) % 60 }
+          ev == "schedule" { printf ", %d min after the :%02d slot", $2 / 60, m } END { print "." }')
+
+        | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(awk -F'\t' '{ s += $2 } END { printf "%.2f GB", s / 1e9 }' {{.RUN}}/upstream.txt) upstream, at [{{.URL}}/]({{.URL}}/) |
         |---|---|
-        | Fetched from CTAN | $(rs 'Number of regular files transferred') files, $(mb "$(rs 'Total transferred file size')"); $(rs 'Number of deleted files') removed upstream |
-        | Published to R2 | $(n upload) uploaded, $(n delete) deleted |
-        | Storage | $(du -sm {{.STAGING}} | cut -f1) MiB of the {{.LIMIT_MB}} MiB limit |
-        | Signature | texlive.tlpdb.sha512, the installers and the tlmgr updaters signed by TeX Live key {{.TL_KEY}}; texlive.tlpdb.xz matches; every container matches its tlpdb checksum |
-        | Read-back | [texlive.tlpdb.sha512]({{.URL}}/tlpkg/texlive.tlpdb.sha512) served from the domain matches the tree just published |
-        | Landing page | [{{.SITE}}]({{.SITE}}/), re-uploaded after this summary |
-
-        <details><summary>rsync stats</summary>
-
-        \`\`\`
-        $(cat {{.RUN}}/fetch.txt)
-        \`\`\`
-        </details>
+        | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next hour" : "") }'); $(n {{.RUN}}/deleted.txt) deleted |
+        | Published to R2 | $(grep -c '^upload:' {{.RUN}}/publish.txt 2>/dev/null || true) uploaded; $(awk '{ s += $1 } END { print s + 0 }' {{.RUN}}/purge.txt 2>/dev/null) URLs purged (cache {{.CACHE}}) |
+        | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
+        | Storage | $(test -f {{.RUN}}/bucket.txt && awk -F'\t' '{ s += $2 } END { printf "%.2f GB in %d objects (reconciled)", s / 1e9, NR }' {{.RUN}}/bucket.txt || echo "not measured this run") of the {{.CEILING_GB}} GB ceiling |
+        | Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlnet tlpdb signed by {{.TL_KEY}}; $(n {{.RUN}}/tl/missing.txt) named containers missing from the bucket" || echo "no tlnet keys in this delta") |
         EOF
+
+  ping:
+    desc: Dead man's switch; healthchecks.io emails when two hours pass without this (skipped if HEALTHCHECK_URL is unset)
+    cmds:
+      - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
+
+  retry:
+    desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter
+    cmds:
+      - |
+        for i in 1 2 3 4 5; do
+          rc=0; ( {{.CMD}} ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
+          case $rc in 0) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
+          s=$((15 * 2 ** i + RANDOM % 30)); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
+        done; exit $rc
 
   image:
     desc: Build the toolbox image (no-op while it exists; remove it to rebuild after a Dockerfile edit)
