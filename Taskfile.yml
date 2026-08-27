@@ -80,6 +80,8 @@ tasks:
           "                    ${d}clock rules list state rebuild? diff plan tlpdb batches delete reconcile? smoke report ping${r}" \
           "                    ${d}vars: SEED=true RECONCILE=true MAX_BATCHES=n BATCH_GB=n CACHE=on${r}" \
           "                    ${d}vars: BUCKET=<scratch> runs it for real without touching {{.BUCKET}}${r}" \
+          "  task seed         First fill of an empty bucket: sync with SEED=true and no batch limit" \
+          "                    ${d}one long run instead of MAX_BATCHES=4 an hour; repeat it to resume a cut-off seed${r}" \
           "  task lint         cloudflare/*.json parse and match their sha256 stamp; cron minute agrees" \
           "" \
           "${c}offline checks -- no network, no credentials, every one inside the image${r}" \
@@ -135,6 +137,19 @@ tasks:
       - {task: smoke}
       - {task: report}
       - {task: ping}
+
+  seed:
+    desc: First fill of an empty bucket - sync with SEED=true and every batch plan makes, in one run
+    cmds:
+      # The globals are evaluated once, at start, and vars passed to a nested task reach
+      # that task and not the ones it calls, so `{task: sync, vars: ...}` would set these
+      # for sync alone and leave state, plan and batches on their defaults. The environment
+      # is the one scope every task reads, so this re-enters task with it set.
+      # MAX_BATCHES caps batches per run and `batches` takes head -n of it; every batch
+      # holds at least one file, so a number past CTAN's object count is "all of them",
+      # however many plan makes this year. CEILING_GB, not this, is what fails a run that
+      # grew too big. Safe to repeat: a bucket that already has a state resumes from it.
+      - SEED=true MAX_BATCHES=999999 task sync
 
   clock:
     desc: Record the run's start (RUN/start.txt) and its lateness against the cron slot (RUN/late.txt)
