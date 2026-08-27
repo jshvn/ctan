@@ -1,8 +1,5 @@
 {
-  "name": "default",
   "description": "sha256:STAMP",
-  "kind": "zone",
-  "phase": "http_request_cache_settings",
   "rules": [
     {
       "description": "cache off: every request reads the bucket",

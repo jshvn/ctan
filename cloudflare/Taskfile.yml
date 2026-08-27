@@ -11,7 +11,9 @@ vars:
   # CF is overridable so the checks in CLAUDE.md can point it at a tree of canned replies.
   CF: '{{.CF | default "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID"}}'
   CACHE: '{{.CACHE | default "off"}}'
-  CURL: '{{.CURL | default "curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600"}}'
+  # --fail-with-body rather than the pipeline's -f: an API 4xx carries its reason in the
+  # body, and -f throws the body away. curl refuses both options together.
+  CURL: 'curl -sS --fail-with-body --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600'
   # file=phase, one line each. CACHE=off swaps the cache rule for the one bypass rule. Smart
   # Tiered Cache is a one-time zone setting, not a call here.
   RULESETS: |-
@@ -124,10 +126,11 @@ tasks:
         fi
         sed "s/sha256:STAMP/sha256:$want/" "$t" > "$t.json"
         # The PUT answers with the ruleset it stored, so the stamp coming back is the after
-        # state: no second GET, and a write that did not take fails the run.
-        got=$({{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @"$t.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" |
-          sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
-        test "$got" = "$want" || { echo "$phase: PUT returned stamp '$got', wanted '$want'" >&2; exit 1; }
+        # state: no second GET, and a write that did not take fails the run with what the
+        # API said about it.
+        put=$({{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @"$t.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true)
+        got=$(printf '%s' "$put" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
+        test "$got" = "$want" || { printf '%s: PUT did not take. The API answered:\n%s\n' "$phase" "$put" >&2; exit 1; }
         echo "$phase: ${f##*/}.json applied over $n rule(s) of ours"
 
   lint-one:
