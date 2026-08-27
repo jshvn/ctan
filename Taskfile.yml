@@ -541,7 +541,7 @@ tasks:
         EOF
 
   ping:
-    desc: Dead man's switch; healthchecks.io emails when two hours pass without this (skipped if HEALTHCHECK_URL is unset)
+    desc: Dead man's switch; healthchecks.io emails when its 3 h grace passes without this (skipped if HEALTHCHECK_URL is unset)
     cmds:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
 
