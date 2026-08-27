@@ -16,8 +16,8 @@ vars:
   STAGING: '{{.ROOT_DIR}}/staging'
   TL: systems/texlive/tlnet                     # the one signed subtree
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC   # tug.org/texlive/verify.html
-  CRON_MINUTE: 41                               # the minute in sync.yml's cron; lint checks they agree
-  CEILING_GB: 175                               # refuse to run past this many decimal GB upstream
+  CRON_MINUTE: 42                               # the minute in sync.yml's cron; lint checks they agree
+  CEILING_GB: 200                               # refuse to run past this many decimal GB upstream
   BATCH_GB: 4                                   # decimal GB per batch; a file over it is a batch by itself
   MAX_BATCHES: '{{.MAX_BATCHES | default "4"}}' # batches per run; the rest wait for the next hour
   SEED: '{{.SEED | default "false"}}'           # true: a missing state file means an empty bucket
@@ -28,6 +28,13 @@ vars:
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
   AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
   CF: https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID
+  # Path to URL path: percent-encode everything outside the unreserved set and "/" (23 CTAN
+  # paths carry spaces, 69 carry ( ) [ ] { } & # > ~ $). Reads paths, prints path TAB encoded.
+  ENCODE: |-
+    awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+      { out = ""; for (j = 1; j <= length($0); j++) { c = substr($0, j, 1)
+          out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) }
+        print $0 "\t" out }'
   # Local runs happen inside tools/docker/ctan: Apple `container` when installed and
   # running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
   # image ships the runner's tool versions so the two agree.
@@ -51,8 +58,65 @@ env:
   AWS_CONFIG_FILE: '{{.ROOT_DIR}}/aws.config'
 
 tasks:
+  # The menu. Bare `task` prints what is worth running by hand and what the environment
+  # needs; the pipeline is `task sync`, which is what both workflows call by name.
+  # ponytail: hand-maintained listing -- go-task can neither group nor annotate, so a new
+  # task means a line below; `task --list` stays the generated view.
   default:
-    cmds: [{task: sync}]
+    desc: Print the task menu - what to run by hand, the offline checks, and the environment they need
+    silent: true
+    cmds:
+      - |
+        b=$(printf '\033[1m'); c=$(printf '\033[1;36m'); d=$(printf '\033[2m')
+        g=$(printf '\033[32m'); y=$(printf '\033[33m'); r=$(printf '\033[0m')
+        printf '%s\n' \
+          "" \
+          "${b}ctan${r}   ${d}an hourly mirror of {{.SOURCE}} at {{.URL}}/${r}" \
+          "" \
+          "${d}every line below is a command you can paste; task --list shows the pipeline's own steps${r}" \
+          "" \
+          "${c}pipeline -- needs R2 credentials${r}" \
+          "  task sync         One hour of the mirror, upstream listing diffed against {{.S3}}" \
+          "                    ${d}clock rules list state rebuild? diff plan tlpdb batches delete reconcile? smoke report ping${r}" \
+          "                    ${d}vars: SEED=true RECONCILE=true MAX_BATCHES=n BATCH_GB=n CACHE=on${r}" \
+          "                    ${d}vars: BUCKET=<scratch> runs it for real without touching {{.BUCKET}}${r}" \
+          "  task lint         cloudflare/*.json parse and match their sha256 stamp; cron minute agrees" \
+          "" \
+          "${c}offline checks -- no network, no credentials, every one inside the image${r}" \
+          "  task --dry --force sync                                  render every command, run none" \
+          "  task run -- task lint" \
+          "  task run -- task normalise RUN=/work/fixtures/run        listing.txt -> upstream.txt" \
+          "  task run -- task diff RUN=<dir>                          canned upstream/applied -> changed/deleted" \
+          "  task run -- task plan RUN=<dir> STAGING=<dir>            changed.txt -> batch-NNNN.txt" \
+          "  task run -- task merge B=<batch> RUN=<dir> STAGING=<dir> the state arithmetic" \
+          "  task run -- task smoke RUN=<dir> URL=file:///work/<dir>" \
+          "  task run -- task retry CMD='exit 5' RETRY_BASE=0" \
+          "  ${d}all of them read fixtures/ (git-excluded): a real dante listing and a signed tlpkg/ tree${r}" \
+          "" \
+          "${c}signatures -- tlnet, pinned to {{.TL_KEY}}${r}" \
+          "  task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/" \
+          "                    ${d}shasum -c the signed sha512, then gpgv for GOODSIG and VALIDSIG on that key${r}" \
+          "  task run -- task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree" \
+          "                    ${d}sizes match, no versioned containers, the tlpdb names nothing missing${r}" \
+          "" \
+          "${c}toolbox -- {{.ENGINE}}, built from tools/docker/ctan${r}" \
+          "  task image        Build it (a no-op while it exists; remove it after a Dockerfile edit)" \
+          "  task run -- <cmd> Run anything inside it, with the repo at /work" \
+          "" \
+          "${c}environment${r}   ${d}nothing is read from disk; these pass by name into the image${r}"
+        for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL AWS_REGION CF_API_TOKEN CF_ZONE_ID HEALTHCHECK_URL; do
+          eval "val=\$$v"
+          case "$v:${val:+set}" in
+            *:set) printf "  ${g}set${r}    %s\n" "$v" ;;
+            AWS_*) printf "  ${y}unset${r}  %-21s ${y}needed by sync${r}\n" "$v" ;;
+            *)     printf "  ${d}unset${r}  %-21s ${d}optional${r}\n" "$v" ;;
+          esac
+        done
+        printf '%s\n' \
+          "  ${d}the four AWS vars are one R2 API token: dashboard -> R2 -> API -> create token${r}" \
+          "  ${d}AWS_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com, AWS_REGION=auto${r}" \
+          "  ${d}CF_API_TOKEN or CF_ZONE_ID unset skips rules; HEALTHCHECK_URL unset skips ping${r}" \
+          ""
 
   sync:
     desc: clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping
@@ -76,9 +140,10 @@ tasks:
     desc: Record the run's start (RUN/start.txt) and its lateness against the cron slot (RUN/late.txt)
     cmds:
       - mkdir -p {{.RUN}}
-      # publish.txt and purge.txt are appended across batches within a run; a reused
-      # workspace must start each run with them gone, or smoke and report count old lines.
-      - rm -f {{.RUN}}/publish.txt {{.RUN}}/purge.txt
+      # publish.txt and purge.txt are appended across batches within a run, and orphans.txt
+      # is written only by reconcile; a reused workspace must start each run with them gone,
+      # or smoke and report count old lines.
+      - rm -f {{.RUN}}/publish.txt {{.RUN}}/purge.txt {{.RUN}}/orphans.txt
       - date -u +%s > {{.RUN}}/start.txt
       # Seconds since the last :CRON_MINUTE, and the hour that slot belongs to. Arithmetic on
       # the epoch only, so it is the same on macOS and Linux. Scheduled runs start 15 to 45
@@ -89,18 +154,20 @@ tasks:
 
   rules:
     desc: Put each ruleset in cloudflare/ on the zone, but only when its sha256 differs from the version there (every PUT is a new version)
-    # Without the token the zone is left as it is; the mirror does not depend on the rules.
-    status: ['test -z "$CF_API_TOKEN"']
+    # Without both the token and the zone id the zone is left as it is; the mirror does not
+    # depend on the rules.
+    status: ['test -z "$CF_API_TOKEN" || test -z "$CF_ZONE_ID"']
     vars:
       # file=phase. CACHE=off swaps the cache rule for the one bypass rule. Smart Tiered
       # Cache is a one-time zone setting, not a call here.
       RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect'
     cmds:
       - for: {var: RULESETS, as: R}
+        # `as: R` binds the template var, not the shell one, so the item lands in $r first.
         # CURL carries -f, so a phase with no ruleset yet (404) makes have empty; the || true
         # keeps that from failing the assignment, and the PUT below then always runs.
         cmd: >-
-          f=cloudflare/${R%%=*}; phase=${R#*=};
+          r='{{.R}}'; f=cloudflare/${r%%=*}; phase=${r#*=};
           want=$(sed '/"description": *"sha256:/d' "$f.json" | shasum -a 256 | cut -c1-64);
           have=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
           || true; } | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
@@ -349,14 +416,10 @@ tasks:
     status: ['test "{{.CACHE}}" != on']
     cmds:
       # Only keys the edge may hold: paths in B that the state already knows (changed, or
-      # deleted), never new ones. Percent-encode everything outside the unreserved set and
-      # "/" (23 paths carry spaces, 69 carry ( ) [ ] { } & # > ~ $).
+      # deleted), never new ones.
       - >-
         cut -f1 {{.B}} | LC_ALL=C comm -12 - <(cut -f1 {{.RUN}}/applied.txt)
-        | awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
-          { out = ""; for (j = 1; j <= length($0); j++) { c = substr($0, j, 1)
-              out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) }
-            print "{{.URL}}/" out }' > {{.RUN}}/urls.txt
+        | {{.ENCODE}} | awk -F'\t' '{ print "{{.URL}}/" $2 }' > {{.RUN}}/urls.txt
       # 100 URLs per call; the sleep keeps it under 800 URLs/s. A failed call fails the run.
       - >-
         rm -f {{.RUN}}/purge-*; test ! -s {{.RUN}}/urls.txt || { split -l 100 -a 5 {{.RUN}}/urls.txt {{.RUN}}/purge-;
@@ -392,13 +455,17 @@ tasks:
       - find {{.STAGING}} -mindepth 1 -delete
 
   delete:
-    desc: Remove the keys in RUN/deleted.txt (1,000 per DeleteObjects call, free), purge them, drop them from the state
+    desc: Remove the keys in D (RUN/deleted.txt unless given), 1,000 per DeleteObjects call and free, purge them, drop them from the state
+    vars:
+      # reconcile passes its own orphan list, so the run's deleted.txt, which report counts,
+      # is left as diff wrote it.
+      D: '{{if .D}}{{.D}}{{else}}{{.RUN}}/deleted.txt{{end}}'
     # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
     # still name these containers, so they go only in the hour every batch has landed.
-    status: ['test ! -s {{.RUN}}/deleted.txt || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}}']
+    status: ['test ! -s {{.D}} || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}}']
     set: [pipefail]
     cmds:
-      - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.RUN}}/deleted.txt {{.RUN}}/del-
+      - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.D}} {{.RUN}}/del-
       # Quiet mode returns only errors, and the CLI exits 0 even then, so grep for them.
       - >-
         for f in {{.RUN}}/del-*; do
@@ -406,8 +473,8 @@ tasks:
              printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
         > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
         | { test "$(grep -c Errors)" = 0; }; done
-      - {task: purge, vars: {B: '{{.RUN}}/deleted.txt'}}
-      - {task: checkpoint, vars: {B: '{{.RUN}}/deleted.txt'}}
+      - {task: purge, vars: {B: '{{.D}}'}}
+      - {task: checkpoint, vars: {B: '{{.D}}'}}
 
   reconcile:
     desc: Rebuild the state from a bucket listing, then delete keys that neither upstream nor .state/ owns
@@ -416,20 +483,25 @@ tasks:
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
-      - cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/' | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/deleted.txt
-      - {task: delete}
+      - cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/' | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/orphans.txt
+      - {task: delete, vars: {D: '{{.RUN}}/orphans.txt'}}
 
   smoke:
     desc: Read /timestamp and a sample of this run's keys back through the domain; sizes must match the listing, the tlpdb sha512 must match the verified copy
     cmds:
+      # The sample is read back by its encoded URL and looked up by its raw path; a sampled
+      # key is as likely as any other to carry a space.
       - >-
         { echo timestamp; grep -h '^upload:' {{.RUN}}/publish.txt 2>/dev/null | sed 's|^upload: .* to s3://{{.BUCKET}}/||' | head -3; }
-        | while IFS= read -r k; do
+        | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
         want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' {{.RUN}}/upstream.txt);
-        got=$({{.CURL}} -I "{{.URL}}/$k" | awk 'tolower($1) == "content-length:" { sub(/\r/, "", $2); print $2 }');
+        got=$({{.CURL}} -I "{{.URL}}/$u" | awk 'tolower($1) == "content-length:" { sub(/\r/, "", $2); print $2 }');
         echo "$k: $got bytes (listing: $want)"; test "$got" = "$want" || exit 1; done
+      # The tlpdb key rides the decision batch, the last one, so a run that stopped at
+      # MAX_BATCHES has not published this hour's copy yet and has nothing to compare.
       - >-
         test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
+        test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}} ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512
 
   report:
@@ -446,7 +518,7 @@ tasks:
 
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(awk -F'\t' '{ s += $2 } END { printf "%.2f GB", s / 1e9 }' {{.RUN}}/upstream.txt) upstream, at [{{.URL}}/]({{.URL}}/) |
         |---|---|
-        | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next hour" : "") }'); $(n {{.RUN}}/deleted.txt) deleted |
+        | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next hour" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
         | Published to R2 | $(grep -c '^upload:' {{.RUN}}/publish.txt 2>/dev/null || true) uploaded; $(awk '{ s += $1 } END { print s + 0 }' {{.RUN}}/purge.txt 2>/dev/null) URLs purged (cache {{.CACHE}}) |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && awk -F'\t' '{ s += $2 } END { printf "%.2f GB in %d objects (reconciled)", s / 1e9, NR }' {{.RUN}}/bucket.txt || echo "not measured this run") of the {{.CEILING_GB}} GB ceiling |

@@ -3,14 +3,14 @@
 An hourly mirror of all of `CTAN/` (dante's `rsync://rsync.dante.ctan.org/CTAN/`) on
 Cloudflare R2, served at `https://ctan.ijosh.com/` with every CTAN path at the bucket root.
 About 496,000 objects and 133 GB; the largest file is 6.87 GB. Storage is the only bill,
-about $1.86 a month; the pipeline refuses to run past 175 GB upstream.
+about $1.86 a month; the pipeline refuses to run past 200 GB upstream.
 
 The design and its evidence are in `docs/full-mirror/taskfile-architecture.md`; the other
 files in that directory are earlier drafts and are not authoritative.
 
 Everything is in a few files:
 
-- `Taskfile.yml`: the whole pipeline. `task sync` runs
+- `Taskfile.yml`: the whole pipeline. Bare `task` prints the menu; `task sync` runs
   `clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping`,
   where `batches` runs `fetch -> verify -> publish -> purge? -> checkpoint` per batch.
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
@@ -18,7 +18,7 @@ Everything is in a few files:
   URLs -> ctan.org). `rules` applies one only when its stamped sha256 differs.
 - `tools/docker/ctan/Dockerfile`: the toolbox image with the runner's tool versions.
   `task run -- task <args>` runs any task inside it with the repo at `/work`.
-- `.github/workflows/sync.yml`: hourly at :41, `timeout-minutes: 350`, dispatch inputs
+- `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
   `seed`, `reconcile`, `max_batches`, `cache`. `check.yml`: `task --dry --force sync` and
   `task lint` on pull requests.
 
@@ -36,7 +36,7 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
 - Secrets are exactly six: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
   `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`. The last two are optional: without them
   `rules` is skipped.
-- Recompute any change that adds storage against the 133 GB baseline and the 175 GB ceiling.
+- Recompute any change that adds storage against the 133 GB baseline and the 200 GB ceiling.
 
 ## Must knows
 
@@ -67,7 +67,7 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 - **`checkpoint` is the last step of a batch.** The state is written once per batch, after
   the upload succeeded, as one PutObject. A run that dies anywhere repeats at most one batch
   the next hour. A run that stops at `MAX_BATCHES` with batches left is a success.
-- **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :41 and a slot
+- **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :42 and a slot
   can be dropped. `clock` records the lateness, `report` prints it, and `reconcile` keys on
   the slot's hour (03 UTC), not the clock's.
 - **`index.html` at the root is CTAN's**, stored and served like every other file; the

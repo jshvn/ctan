@@ -1,7 +1,7 @@
 name: sync
 on:
   schedule:
-    - cron: '41 * * * *'   # hourly at a fixed minute; runs start 15 to 45 minutes after it
+    - cron: '42 * * * *'   # hourly at a fixed minute; runs start 15 to 45 minutes after it
   workflow_dispatch:
     inputs:
       seed:
@@ -19,8 +19,8 @@ on:
       cache:
         description: 'Cache rule and purges: on or off'
         type: choice
-        options: [off, on]
-        default: off
+        options: ['off', 'on']
+        default: 'off'
 permissions:
   contents: read
 concurrency:
