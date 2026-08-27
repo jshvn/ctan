@@ -23,6 +23,7 @@ vars:
   SEED: '{{.SEED | default "false"}}'           # true: a missing state file means an empty bucket
   RECONCILE: '{{.RECONCILE | default "auto"}}'  # true, false, or auto (the run whose slot is in hour 03 UTC); true also rebuilds a missing state
   CACHE: '{{.CACHE | default "off"}}'           # off: one bypass rule, no purges; on: cache rule and purges
+  RETRY_BASE: 15                                # seconds; the retry sleeps are RETRY_BASE * 2^i plus jitter (0 makes retry instant for tests)
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
   AWS_FLAGS: --no-progress --cli-connect-timeout 60 --cli-read-timeout 300
@@ -458,7 +459,8 @@ tasks:
         for i in 1 2 3 4 5; do
           rc=0; ( {{.CMD}} ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
           case $rc in 0) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
-          s=$((15 * 2 ** i + RANDOM % 30)); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
+          test $i -lt 5 || break
+          s=$(({{.RETRY_BASE}} * 2 ** i + RANDOM % (2 * {{.RETRY_BASE}} + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
         done; exit $rc
 
   image:
