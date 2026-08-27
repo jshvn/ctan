@@ -455,12 +455,12 @@ tasks:
       - test -z "$HEALTHCHECK_URL" || curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"
 
   retry:
-    desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter
+    desc: Run CMD, retrying rsync's transport exit codes (5 10 12 30 35) five times with backoff and jitter; exit 24 (file vanished mid-transfer) is a success
     cmds:
       - |
         for i in 1 2 3 4 5; do
           rc=0; ( {{.CMD}} ) || rc=$?   # subshell so CMD's exit cannot end the loop; || so Task's errexit cannot
-          case $rc in 0) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
+          case $rc in 0|24) exit 0;; 5|10|12|30|35) ;; *) exit $rc;; esac
           test $i -lt 5 || break
           s=$(({{.RETRY_BASE}} * 2 ** i + RANDOM % (2 * {{.RETRY_BASE}} + 1))); echo "rsync exit $rc, retry $i in ${s}s" >&2; sleep $s
         done; exit $rc
