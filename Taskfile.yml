@@ -76,6 +76,9 @@ tasks:
     desc: Record the run's start (RUN/start.txt) and its lateness against the cron slot (RUN/late.txt)
     cmds:
       - mkdir -p {{.RUN}}
+      # publish.txt and purge.txt are appended across batches within a run; a reused
+      # workspace must start each run with them gone, or smoke and report count old lines.
+      - rm -f {{.RUN}}/publish.txt {{.RUN}}/purge.txt
       - date -u +%s > {{.RUN}}/start.txt
       # Seconds since the last :CRON_MINUTE, and the hour that slot belongs to. Arithmetic on
       # the epoch only, so it is the same on macOS and Linux. Scheduled runs start 15 to 45
