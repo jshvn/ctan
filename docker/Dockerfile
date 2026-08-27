@@ -9,8 +9,10 @@ ARG TASK_VERSION=3.53.1
 ARG AWSCLI_VERSION=2.36.24
 
 # perl carries shasum; unzip is only for the AWS CLI installer.
+# Each RUN deletes its own scratch: a layer keeps whatever it leaves. Lists are 53 MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    rsync gnupg xz-utils curl ca-certificates perl unzip
+      rsync gnupg xz-utils curl ca-certificates perl unzip \
+ && rm -rf /var/lib/apt/lists/*
 
 # task: the release tarball, checksum from task_checksums.txt of the same release.
 # Bumping TASK_VERSION means bumping both sums.
@@ -21,14 +23,30 @@ RUN set -eu; arch=$(uname -m); case "$arch" in \
     curl -fsSL -o /tmp/task.tgz "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_${t}.tar.gz"; \
     echo "$sum  /tmp/task.tgz" | sha256sum -c -; \
     tar -xzf /tmp/task.tgz -C /usr/local/bin task; \
+    rm -f /tmp/task.tgz; \
     task --version
 
 # AWS CLI v2 from the official installer, version pinned; ponytail: the zip's PGP
 # signature is not checked (it would need AWS's key in the image); HTTPS and the pin are
 # the guarantee.
+# The zip and its unpacked installer are 320 MB of scratch once `./aws/install` returns.
+# ponytail: botocore ships 432 service models and the pipeline calls one, so all but s3,
+# sts and the data-root *.json (endpoints, partitions) go -- 105 MB. Ceiling: an `aws`
+# call to any other service dies on a model lookup; add it to the keep list, or drop the
+# trim. `examples/` and `topics/` need groff to render, `ac.index` is completion only.
+# The `s3 ls` at a dead port is the check -- reaching the network means s3 still loads.
 RUN set -eu; arch=$(uname -m); \
     curl -fsSL -o /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${AWSCLI_VERSION}.zip"; \
     cd /tmp && unzip -q awscli.zip && ./aws/install; \
-    aws --version
+    rm -rf /tmp/awscli.zip /tmp/aws; \
+    d=/usr/local/aws-cli/v2/current/dist/awscli; \
+    mkdir /tmp/keep; \
+    for k in s3 sts; do mv "$d/botocore/data/$k" /tmp/keep/; done; \
+    mv "$d/botocore/data"/*.json /tmp/keep/; \
+    rm -rf "$d/botocore/data"; mv /tmp/keep "$d/botocore/data"; \
+    rm -rf "$d/examples" "$d/topics" "$d/data/ac.index"; \
+    aws --version; \
+    aws s3 ls s3://x --no-sign-request --endpoint-url http://127.0.0.1:1 2>&1 \
+      | grep -qiE 'connect|endpoint|refused'
 
 WORKDIR /work
