@@ -284,10 +284,11 @@ tasks:
       - find {{.STAGING}} -mindepth 1 -delete
       - cut -f1 {{.B}} > {{.RUN}}/files.txt
       # --files-from implies --relative (parents are created) and not -r; -L turns every
-      # symlink into its file. A path that vanished since the listing is skipped: its
-      # state line then names a key the bucket lacks, which the next hour deletes. No
-      # --partial: staging is emptied every batch, so there is nothing to resume, and a
-      # partial file must never reach the bucket.
+      # symlink into its file. A path that vanished since the listing is skipped: it never
+      # lands in staging, so merge (the batch joined against what staging holds) drops it
+      # from the state rather than recording it; any object it once had in the bucket
+      # waits for the daily reconcile to clean up. No --partial: staging is emptied every
+      # batch, so there is nothing to resume, and a partial file must never reach the bucket.
       - task: retry
         vars: {CMD: '{{.RSYNC}} -Lt --files-from={{.RUN}}/files.txt --ignore-missing-args {{.SOURCE}} {{.STAGING}}/'}
 
