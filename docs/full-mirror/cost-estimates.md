@@ -37,7 +37,7 @@ be 0.14 GB, under the rounding of every figure here.
 | Ceiling of the cached design, if the cache is turned on (every object refetched twice a day) | $7.20 + storage, and it is not a hard ceiling |
 | Seed month, seeded on the 15th | $0.98 storage, $0 operations |
 | Second and third seed in one month | $4.50 for the month, together |
-| Budget to adopt | $5/month; the run fails at 175 GB or 600k objects before upload; 800k Class A and 8M Class B month-to-date signal healthchecks |
+| Budget to adopt | $5/month; the run fails at 200 GB or 600k objects before upload; 800k Class A and 8M Class B month-to-date signal healthchecks |
 
 ## Storage set
 
@@ -266,8 +266,8 @@ $0.015 = **$14.85**, as printed. Both arithmetic checks pass with the prices abo
 | Bucket | Usage | Billable GB-month | $/month |
 |---|---:|---:|---:|
 | Stored set | 132.99 | 123 | 1.85 |
-| 175 GB (the ceiling proposed below) | 175 | 165 | 2.48 |
-| 200 GB | 200 | 190 | 2.85 |
+| 175 GB | 175 | 165 | 2.48 |
+| 200 GB (the ceiling proposed below) | 200 | 190 | 2.85 |
 | 300 GB | 300 | 290 | 4.35 |
 
 ### Class A, per sync design
@@ -696,8 +696,8 @@ slow and visible in every `report`.
 
 ## Budget
 
-Adopt a hard ceiling of **$5.00 a month**, which is the storage line at the proposed 175 GB
-bucket ceiling ($2.48) plus one Class A or Class B rounding accident ($4.50 would breach
+Adopt a hard ceiling of **$5.00 a month**, which is the storage line at the proposed 200 GB
+bucket ceiling ($2.85) plus one Class A or Class B rounding accident ($4.50 would breach
 it, $0.36 would not). In practice the target is the storage line alone.
 
 Four guards, two kinds. The pre-upload guards fail the run, because a run is the only
@@ -707,7 +707,7 @@ traffic or a listing that already happened, and stopping the mirror does not und
 
 | Guard | Threshold | Arithmetic | What it catches |
 |---|---|---|---|
-| Storage, from the daily reconcile listing or `r2StorageAdaptiveGroups` (fails the run) | > 175 GB | 175 − 10 = 165 × $0.015 = $2.48; 42 GB of headroom over today for upstream growth (62 GB changed last year but the tree grew far less; the ISO and pkg replace, not add) | a symlink loop, a new alias directory, a second ISO copy |
+| Storage, from the daily reconcile listing or `r2StorageAdaptiveGroups` (fails the run) | > 200 GB | 200 − 10 = 190 × $0.015 = $2.85; 67 GB of headroom over today for upstream growth (62 GB changed last year but the tree grew far less; the ISO and pkg replace, not add) | a symlink loop, a new alias directory, a second ISO copy |
 | Objects, from the upstream listing before any upload (`verify`'s inflation guard; fails the run) | > 600,000 | 100k over today; a listing that size is still 600 pages a day | the same, before it costs anything |
 | Class A month-to-date, `r2OperationsAdaptiveGroups` (signals, never fails) | > 800,000 | 80% of the free million; an hourly listing-twice design or a second seed crosses it days before the bill does | a `publish` that started listing per hour |
 | Class B month-to-date (signals, never fails) | > 8,000,000 | 80% of the free 10M; at 28 installs/day uncached it trips on day 24, at 100/day on day 7 | the cache rule silently gone |

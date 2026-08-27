@@ -43,7 +43,7 @@ the body (section 3). "Note" means a job-summary row or a `::warning::` annotati
 | Correctness | Did the purge take? | first GET of a purged key is `MISS`, or `HIT` with `Age` < seconds since purge | `smoke` | violated | fail |
 | Correctness | Are the decision files uncached? | `cf-cache-status` of `tlpkg/texlive.tlpdb.sha512` and `/timestamp` is never `HIT` | `smoke` | `HIT` | fail |
 | Correctness | tlnet signatures | unchanged from today (`verify`) | `verify` | any | fail before upload |
-| Cost | Storage | reconcile listing sum now; max(`payloadSize`+`metadataSize`) last 24 h when `usage` exists | reconcile, `usage` (deferred) | > 150 GB note; > 175 GB health (deferred) | note / health (deferred) |
+| Cost | Storage | reconcile listing sum now; max(`payloadSize`+`metadataSize`) last 24 h when `usage` exists | reconcile, `usage` (deferred) | > 150 GB note; > 200 GB health (deferred) | note / health (deferred) |
 | Cost | Class A month-to-date, last 24 h | `r2OperationsAdaptiveGroups` | `usage` (deferred) | see section 8 | note / health (deferred); never fails a run |
 | Cost | Class B month-to-date, last 24 h | same | `usage` (deferred) | see section 8 | note / health (deferred); never fails a run |
 | Cost | Cache hit ratio, last 24 h | `httpRequestsAdaptiveGroups` by cache status (field unverified, section 2.4); only meaningful with `CACHE=on` | `usage` (deferred) | < 70 % note; < 40 % two runs health | note / health (deferred) |
@@ -679,7 +679,7 @@ the default `CACHE: off` those scenarios cannot occur, and `smoke` #6 asserts th
 | Cron stopped (60-day disable, schedule dropped repeatedly, workflow disabled by hand) | no run, no failure | healthchecks `sync` late then down; `days since last commit` warning at 45 | healthchecks, `report` |
 | Runner runs but uploads nothing while upstream changed (a `cp` that matches zero files, a wrong `--files-from`, an empty batch plan) | `aws s3 cp` exits 0 with nothing to do | `publish` asserts `upload:` lines == fetched files; `report` shows changed > 0 and uploaded = 0 | `publish` |
 | The whole tree re-uploaded every hour (state file lost, or `.state/` deleted by the reconcile) | at-least-once makes it "correct"; 496k Class A an hour | `guard` on the delta: with a state file present, a delta over 20 % of it fails before fetch; Class A last 24 h | `guard`, `usage` |
-| Storage creeping toward the ceiling (an alias directory or installer set growing) | each run is small | pre-upload guard on the listing total; `usage` storage max vs 150/175 GB; top-5 directory growth in `report` | `guard`, `usage`, `report` |
+| Storage creeping toward the ceiling (an alias directory or installer set growing) | each run is small | pre-upload guard on the listing total; `usage` storage max vs 150/200 GB; top-5 directory growth in `report` | `guard`, `usage`, `report` |
 | An alias directory inflating (upstream turns a symlink into a large real tree; a new alias) | bytes arrive one batch at a time | `report` "largest directory deltas this run" (counts, not lists); guard total | `report`, `guard` |
 | Mirmon red while our runs are green | our probe and theirs differ | mirmon row; `health` on age > 28 h or 3 failed probes | `report`, `health` |
 | `/timestamp` served by an edge from cache | `smoke` #1 sees the runner's PoP only | mirmon (their probe, their PoP) | `report` |
@@ -713,11 +713,11 @@ transition, the mirror keeps running, the human decides.
 
 **Thresholds.** Baselines from `cost-estimates.md`: ~34k Class A a month
 (hourly runs plus the daily reconcile's 497 listings), ~720 state reads and negligible Class B
-from the pipeline; 133 GB stored, ceiling 175 GB; a full seed is ~500k Class A in its month.
+from the pipeline; 133 GB stored, ceiling 200 GB; a full seed is ~500k Class A in its month.
 
 | Signal | Window | Note (`::warning::`) | `health` down | Basis |
 |---|---|---|---|---|
-| Storage, max(payload+metadata) | last 24 h | > 150 GB | > 175 GB | ceiling; 132.99 GB today (`cost-estimates.md`) |
+| Storage, max(payload+metadata) | last 24 h | > 150 GB | > 200 GB | ceiling; 132.99 GB today (`cost-estimates.md`) |
 | Class A | month-to-date | > 500,000 | > 900,000 | 1M free; a seed month sits at the note line by design |
 | Class A | last 24 h | > 50,000 | > 250,000 | normal day ≈ 24 × 25 + 497 + 24 ≈ 1,100; a re-seed is 496k |
 | Class B | month-to-date | > 5,000,000 | > 8,000,000 | 10M free |

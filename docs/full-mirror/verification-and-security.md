@@ -25,7 +25,7 @@ Summary:
   mirror goes stale; that is the intended behaviour.
 - The symlink-inflation guard is two numbers from the listing, checked before any byte is
   fetched: 496,149 objects and 132.99 GB against `CEILING_OBJECTS=650000` and
-  `CEILING_GB=175`. A release day adds 20.94 GB and stays under it.
+  `CEILING_GB=200`. A release day adds 20.94 GB and stays under it.
 - Nothing here needs a tool outside `rsync`, `aws`, `gpg`/`gpgv`, `shasum`, `xz`, `curl`,
   `task`. Two secrets are added for Cloudflare (caching.md).
 
@@ -393,8 +393,8 @@ guard:
     - awk -F'\t' -v max={{.MAX_OBJECT_BYTES}} '$2 > max {print "GUARD: " $1 " is " $2 " bytes, larger than the runner can stage"; f=1} END{exit f}' {{.RUN}}/upstream.txt
 ```
 
-Variables: `CEILING_OBJECTS: 650000`, `CEILING_GB: 175` (133 GB plus a release
-day plus a year of growth; $2.48/month at the ceiling, cost-estimates.md), `MAX_OBJECT_BYTES:
+Variables: `CEILING_OBJECTS: 650000`, `CEILING_GB: 200` (133 GB plus a release
+day plus a year of growth; $2.85/month at the ceiling, cost-estimates.md), `MAX_OBJECT_BYTES:
 12000000000` (the 14 GB runner disk less headroom; the largest object today is 6.87 GB).
 The ceiling is a bound on the **mirror total**, not on the delta: on 2026-03-01 the delta
 was 20.94 GB and the total went from ~112 GB to ~133 GB, which passes. A ceiling on the

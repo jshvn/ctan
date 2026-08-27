@@ -116,7 +116,7 @@ vars:
   TL: systems/texlive/tlnet                     # the one signed subtree
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC   # tug.org/texlive/verify.html
   CRON_MINUTE: 41                               # the minute in sync.yml's cron; lint checks they agree
-  CEILING_GB: 175                               # refuse to run past this many decimal GB upstream
+  CEILING_GB: 200                               # refuse to run past this many decimal GB upstream
   BATCH_GB: 4                                   # decimal GB per batch; a file over it is a batch by itself
   MAX_BATCHES: '{{.MAX_BATCHES | default "4"}}' # batches per run; the rest wait for the next hour
   SEED: '{{.SEED | default "false"}}'           # true: a missing state file means an empty bucket
@@ -978,7 +978,7 @@ listing differs from rsync 3.2.7 only in the blank zero size, which the normalis
 | `STAGING` | `{{.ROOT_DIR}}/staging` | no |
 | `TL` | `systems/texlive/tlnet` | no |
 | `TL_KEY` | `C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC` | no; rotate only against tug.org/texlive/verify.html |
-| `CEILING_GB` | 175 | `cost-estimates.md` sets the number; today's tree is 133 GB, the 30-day churn 4.71 GB (computed) |
+| `CEILING_GB` | 200 | `cost-estimates.md` sets the number; today's tree is 133 GB, the 30-day churn 4.71 GB (computed) |
 | `BATCH_GB` | 4 | only if the runner's free disk changes |
 | `CRON_MINUTE` | 41 | with the cron line in `sync.yml`; `lint` fails when they differ |
 | `MAX_BATCHES` | 4 | run-time flag; raise on a manual push |

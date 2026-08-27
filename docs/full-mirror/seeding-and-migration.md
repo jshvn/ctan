@@ -307,7 +307,7 @@ What changes:
   tlnet excludes are applied to paths matching `^systems/texlive/tlnet/`. The state file's
   keys are already CTAN-relative, so the delta of the first run is exactly the 479,175 keys
   the state does not know, plus whatever tlnet changed in the hour.
-- `LIMIT` becomes 175 GB and 600k objects, applied to the upstream listing before any
+- `LIMIT` becomes 200 GB and 600k objects, applied to the upstream listing before any
   batch is fetched, as `guard`.
 - `page` survives and changes key: it uploads `site/index.html` to `s3://tlnet/.site/index.html`,
   and the Transform Rule is retargeted from `/` → `/index.html` to `/` → `/.site/index.html`
@@ -330,7 +330,7 @@ What changes:
   133 GB; operations stay in the free tier". The must-know "`index.html` lives at the bucket
   root" becomes "the landing page lives at `/.site/index.html`, outside CTAN's paths, and
   `/index.html` is CTAN's"; "Single-part uploads" gains the five-object exception; "No versioned
-  containers" stays verbatim. The size ceiling line changes from 10 GB to 175 GB.
+  containers" stays verbatim. The size ceiling line changes from 10 GB to 200 GB.
 - `README.md` and `SECURITY.md`: see [Post-migration cleanup](#post-migration-cleanup).
   They ship in this PR because the mirror is a CTAN mirror the moment it merges.
 - Secrets: none. Endpoints: none (dante, R2, the domain, healthchecks, as today).

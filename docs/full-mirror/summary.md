@@ -36,7 +36,7 @@ requirement; ask in the registration notes).
 | Hourly run | ~30 s quiet, ~50 s at P99, ~2 min on the busiest file hour; a release day is three lone 6.8 GB batches of ~20 min each | [sync-with-dante.md](sync-with-dante.md#8-time-budget-of-an-hourly-run) |
 | Cron lateness | Scheduled runs start 15 to 45 min after the cron minute (one run in this repository started 39 min late; today's was 18+ min late); a slot can be dropped outright; the run never starts at its minute | [limits.md](limits.md), [monitoring.md](monitoring.md) |
 | Thinnest limit margin | 6-hour job during the seed (resumable by design); seed month uses ~52% of free Class A; everything hourly is under 3% of any limit | [limits.md](limits.md#8-consolidated-table) |
-| Storage ceiling | 175 GB and 600,000 objects, checked on the upstream listing before any fetch | [cost-estimates.md](cost-estimates.md#budget), [verification-and-security.md](verification-and-security.md#4-the-symlink-inflation-guard-and-the-storage-ceiling) |
+| Storage ceiling | 200 GB and 600,000 objects, checked on the upstream listing before any fetch | [cost-estimates.md](cost-estimates.md#budget), [verification-and-security.md](verification-and-security.md#4-the-symlink-inflation-guard-and-the-storage-ceiling) |
 | Secrets | 6: the four today plus `CF_API_TOKEN`, `CF_ZONE_ID` | [caching.md](caching.md#token-and-secrets) |
 | Endpoints | 6: dante, R2, `ctan.ijosh.com`, `hc-ping.com`, `api.cloudflare.com`, `ctan.org` (mirmon page) | [monitoring.md](monitoring.md#6-mirmon) |
 
@@ -98,7 +98,7 @@ Each stated on its own terms, with the reason and the file that carries the evid
   signature-checked and hashed when an ISO is in the delta; everything else on CTAN carries
   no pinnable signature and is copied as served, and `SECURITY.md` says exactly which is
   which. [verification-and-security.md](verification-and-security.md#every-index-a-client-trusts)
-- The storage guard runs on the upstream listing before any fetch: 175 GB and 600,000
+- The storage guard runs on the upstream listing before any fetch: 200 GB and 600,000
   objects, `timestamp` present, at least 90% of the state's line count. A release day adds
   21 GB and stays under it. [verification-and-security.md](verification-and-security.md#4-the-symlink-inflation-guard-and-the-storage-ceiling), [cost-estimates.md](cost-estimates.md#budget)
 - tlnet's and tlcontrib's versioned containers are dropped in the normaliser. Nothing
@@ -189,7 +189,7 @@ Each stated on its own terms, with the reason and the file that carries the evid
 --no-h`, normalised to `path TAB size TAB mtime`, tlnet and tlcontrib versioned containers
 and `update-tlmgr-r*` dropped, floor of 400k lines) → `state` (fetch `.state/applied.txt.xz`;
 missing fails unless `SEED=true`) → `diff` (`comm -13` for changed, `comm -23` on paths for
-deleted; refetch-storm guard at 10%) → `plan` (ceiling 175 GB / 600k on the listing, `df`
+deleted; refetch-storm guard at 10%) → `plan` (ceiling 200 GB / 600k on the listing, `df`
 check, batches of ≤4 GB in key order, installers alone, the decision batch of root files,
 tlnet root files and `tlpkg/` last with `timestamp` last of all, at most `MAX_BATCHES`) →
 `tlpdb` (when the delta touches tlnet: fetch the four control files into `RUN/tl`, sha512,
@@ -257,7 +257,7 @@ Later, at the trigger: `feat(cache): CACHE on` with the purge step.
 `ctan.ijosh.com`, `hc-ping.com`, `api.cloudflare.com`, `ctan.org`. Tools unchanged.
 CLAUDE.md lines that change: the opening paragraph (hourly, all of CTAN, 496k files, 133 GB,
 largest 6.87 GB); the file list (`cloudflare/*.json`; `site/` becomes `.site/`); "Zero
-running cost" becomes "storage is the only bill, $1.86 at 133 GB, ceiling 175 GB / 600k
+running cost" becomes "storage is the only bill, $1.86 at 133 GB, ceiling 200 GB / 600k
 objects"; "workflows run one task, and `task fail` if it failed"; endpoints and secrets as
 above; the objects line names the two reserved prefixes; the must-knows become the
 decisions in section 3 (versioned containers, the state line, the hourly path never listing

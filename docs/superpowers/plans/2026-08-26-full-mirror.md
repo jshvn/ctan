@@ -979,7 +979,7 @@ a file that is not there.
 An hourly mirror of all of `CTAN/` (dante's `rsync://rsync.dante.ctan.org/CTAN/`) on
 Cloudflare R2, served at `https://ctan.ijosh.com/` with every CTAN path at the bucket root.
 About 496,000 objects and 133 GB; the largest file is 6.87 GB. Storage is the only bill,
-about $1.86 a month; the pipeline refuses to run past 175 GB upstream.
+about $1.86 a month; the pipeline refuses to run past 200 GB upstream.
 
 The design and its evidence are in `docs/full-mirror/taskfile-architecture.md`; the other
 files in that directory are earlier drafts and are not authoritative.
@@ -1012,7 +1012,7 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
 - Secrets are exactly six: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
   `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`. The last two are optional: without them
   `rules` is skipped.
-- Recompute any change that adds storage against the 133 GB baseline and the 175 GB ceiling.
+- Recompute any change that adds storage against the 133 GB baseline and the 200 GB ceiling.
 
 ## Must knows
 
