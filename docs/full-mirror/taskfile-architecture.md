@@ -798,10 +798,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350   # under the 6-hour job limit; every batch checkpoints, so a cut-off costs one batch
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-      AWS_REGION: auto
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
       HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
@@ -988,7 +988,7 @@ listing differs from rsync 3.2.7 only in the blank zero size, which the normalis
 | `AWS_FLAGS` | `--no-progress --cli-connect-timeout 60 --cli-read-timeout 300` | no |
 | `CF` | `https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID` | no |
 | `AWS_CONFIG_FILE` | `aws.config` in the repo | no |
-| Secrets | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID` | all six, in the fork's repository settings |
+| Secrets | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`, `AWS_REGION`, `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID` | all seven, in the fork's repository settings |
 
 Fixed inside tasks, not variables: the 400,000-line listing floor, 1,000 keys per
 `DeleteObjects`, 100 URLs per purge, `sleep 0.3`, the 1 GiB disk headroom, the 03 slot for

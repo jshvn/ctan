@@ -787,8 +787,8 @@ risk; wait for the reconcile.
 
 **R7. Rotate a secret.**
 ```
-gh secret set R2_ACCESS_KEY_ID   # paste the new token's id
-gh secret set R2_SECRET_ACCESS_KEY
+gh secret set AWS_ACCESS_KEY_ID   # paste the new token's id
+gh secret set AWS_SECRET_ACCESS_KEY
 gh secret set CF_API_TOKEN
 gh workflow run sync.yml && gh run watch
 ```
