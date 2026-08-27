@@ -43,11 +43,12 @@ curl -s https://ctan.ijosh.com/timestamp
 
 ## Why use this?
 
-`tlmgr`'s default repository is CTAN's mirror rotation: every request lands on a different
-volunteer mirror, and any one of them can be unreachable, on a slow connection, behind on
-TLS, or a few days stale. This is one origin behind
-[Cloudflare's network](https://cloudflare.com/network), never more than about an hour
-behind the master.
+I built this for myself. `mirrors.ctan.org` hands out a different volunteer mirror on every
+request, and sooner or later one is overloaded, stale, or unreachable — which breaks the CI
+that builds my documents. This is one hostname on
+[Cloudflare's network](https://cloudflare.com/network) of 300+ cities, a short and
+consistent hop wherever you are. It costs under $2 a month to run: R2 bills for storage and
+nothing for bandwidth, so traffic doesn't move the bill.
 
 ## Want your own?
 
