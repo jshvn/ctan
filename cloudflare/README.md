@@ -1,13 +1,15 @@
 # cloudflare
 
 Optional. The mirror uploads to R2 and serves from R2 whether or not anything here ever
-runs; nothing in the pipeline depends on the zone. This directory holds the four rulesets
-the mirror wants on its zone, and the tasks that read and write them.
+runs; nothing in the pipeline depends on the zone. `rules/` holds the rulesets the mirror
+wants on its zone; `Taskfile.yml` reads and writes them.
 
 Leave `CF_API_TOKEN` or `CF_ZONE_ID` unset and every task here is a no-op. Delete the
 directory and `task sync` still runs.
 
 ## The rulesets
+
+All five live in `rules/`.
 
 | File | Phase | What it does |
 |---|---|---|

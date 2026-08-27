@@ -82,10 +82,10 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 - **Cloudflare's HTML rewriters must stay off for the mirror.** Email Address Obfuscation
   injects a script into every `text/html` response and drops `content-length`, so the
   bytes stop matching the listing and `smoke` fails on any HTML key it samples.
-  `cloudflare/config-rules.json` turns it and Rocket Loader off for `HOST` alone; the
+  `cloudflare/rules/config-rules.json` turns it and Rocket Loader off for `HOST` alone; the
   rest of the zone keeps them.
 - **`index.html` at the root is CTAN's**, stored and served like every other file; the
-  transform rule in `cloudflare/transform-rules.json` rewrites `/` to it. `README.md` is the
+  transform rule in `cloudflare/rules/transform-rules.json` rewrites `/` to it. `README.md` is the
   documentation; there is no landing page of our own.
 - **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
 - **A failed run is the only alert.** The check is cron `42 * * * *` UTC with a 3 h grace,
@@ -93,7 +93,7 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   passes without `ping`, which also catches GitHub disabling the schedule after 60
   commit-free days. Pause the check before a seed — a multi-hour run outlasts the grace.
 - The edge cache is off (`CACHE=off`: one bypass rule, no purges). `CACHE=on` swaps in
-  `cache-rules.json` and purges changed keys per batch, `purge` computing the URLs here and
+  `rules/cache-rules.json` and purges changed keys per batch, `purge` computing the URLs here and
   `cloudflare:purge` making the call; switch it on only when R2 Class B reads exceed 5M a
   month for two months.
 
@@ -105,7 +105,7 @@ dante listing and a signed `tlpkg/` tree.
 - `task run -- task --dry --force sync` renders the pipeline without touching the network.
   `--force` ignores every `status`, so it renders `cloudflare:set` too and wants the
   directory present; plain `--dry` is the check for a fork that deleted it.
-- `task run -- task lint` validates `cloudflare/*.json` and the cron minute.
+- `task run -- task lint` validates `cloudflare/rules/*.json` and the cron minute.
 - `task cloudflare:set CF=file://<dir> CF_API_TOKEN=x CF_ZONE_ID=x` against a tree of
   `rulesets/phases/<phase>/entrypoint` files: a phase holding rules this repo did not
   stamp must warn and skip, never PUT; one carrying the current stamp must report

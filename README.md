@@ -76,7 +76,7 @@ a run with none of them set is a complete run.
 | Secret | What it turns on |
 | --- | --- |
 | `HEALTHCHECK_URL` | A healthchecks.io ping URL. The last step of every run pings it |
-| `CF_API_TOKEN` | A zone token that lets the run put `cloudflare/*.json` on your zone |
+| `CF_API_TOKEN` | A zone token that lets the run put `cloudflare/rules/*.json` on your zone |
 | `CF_ZONE_ID` | The zone that token writes to; both or neither |
 | `CF_ENABLE_AUTOMATION` | Set to anything and `sync` applies those rulesets every hour |
 

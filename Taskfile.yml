@@ -89,7 +89,7 @@ tasks:
           "                    ${d}vars: BUCKET=<scratch> runs it for real without touching {{.BUCKET}}${r}" \
           "  task seed         First fill of an empty bucket: sync with SEED=true and no batch limit" \
           "                    ${d}one long run instead of MAX_BATCHES=4 an hour; repeat it to resume a cut-off seed${r}" \
-          "  task lint         cloudflare/*.json parse, hold a rule, name no host; cron minute agrees" \
+          "  task lint         cloudflare/rules/*.json parse, hold a rule, name no host; cron minute agrees" \
           "" \
           "${c}cloudflare -- optional; the mirror runs without any of it, see cloudflare/README.md${r}" \
           "  task cloudflare:get   What the zone holds in the phases cloudflare/ manages, and who wrote it" \
@@ -190,7 +190,7 @@ tasks:
       - {task: cloudflare:set}
 
   lint:
-    desc: Every cloudflare/*.json parses, holds a rule, and names no host; the cron minute matches CRON_MINUTE
+    desc: Every cloudflare/rules/*.json parses, holds a rule, and names no host; the cron minute matches CRON_MINUTE
     cmds:
       - {task: lint-rulesets}
       - 'test "$(sed -n "s/.*cron: ''\([0-9]*\) \* \* \* \*''.*/\1/p" .github/workflows/sync.yml)" = "{{.CRON_MINUTE}}"'

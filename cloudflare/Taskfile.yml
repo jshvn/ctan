@@ -59,7 +59,7 @@ tasks:
     cmds:
       - for: [bypass-rules, cache-rules, transform-rules, redirect-rules, config-rules]
         task: lint-one
-        vars: {F: '{{.TASKFILE_DIR}}/{{.ITEM}}.json'}
+        vars: {F: '{{.TASKFILE_DIR}}/rules/{{.ITEM}}.json'}
 
   # PHASE names one phase to work on; unset means all of them. A name that matches nothing is
   # a typo, and a typo that quietly did nothing would read as "the zone is fine".
@@ -80,7 +80,7 @@ tasks:
     status: ['test -n "{{.PHASE}}" && test "{{.PHASE}}" != "$(echo {{.R}} | sed "s/.*=//")"']
     cmds:
       - |
-        r='{{.R}}'; f={{.TASKFILE_DIR}}/${r%%=*}; phase=${r#*=}
+        r='{{.R}}'; f={{.TASKFILE_DIR}}/rules/${r%%=*}; phase=${r#*=}
         # A phase with no ruleset yet is a 404, which -f turns into a curl error line; that
         # line is the answer, so it is left where it can be read.
         now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true; })
@@ -106,7 +106,7 @@ tasks:
     # them needs a JSON parser the toolbox does not carry.
     cmds:
       - |
-        r='{{.R}}'; f={{.TASKFILE_DIR}}/${r%%=*}; phase=${r#*=}; t=$(mktemp)
+        r='{{.R}}'; f={{.TASKFILE_DIR}}/rules/${r%%=*}; phase=${r#*=}; t=$(mktemp)
         sed 's/@HOST@/{{.HOST}}/g' "$f.json" > "$t"
         want=$(sed '/"description": *"sha256:/d' "$t" | shasum -a 256 | cut -c1-64)
         # CURL carries -f, so a phase with no ruleset yet (404) leaves now empty; the
