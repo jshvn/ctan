@@ -1,0 +1,140 @@
+# Everything in the mirror that talks to the Cloudflare API. Nothing here is needed to run
+# the mirror: leave CF_API_TOKEN or CF_ZONE_ID unset and every task is a no-op, and the whole
+# directory can be deleted. README.md in this directory has the token and its permissions.
+#   CF_API_TOKEN   zone token, Edit on Cache Rules, Transform Rules, Single Redirect and
+#                  Config Rules, plus Cache Purge when CACHE=on
+#   CF_ZONE_ID     the zone's id, from its Overview page
+# Called from the root Taskfile as cloudflare:<task>, which passes HOST, CURL and CACHE.
+version: '3'
+
+vars:
+  # CF is overridable so the checks in CLAUDE.md can point it at a tree of canned replies.
+  CF: '{{.CF | default "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID"}}'
+  CACHE: '{{.CACHE | default "off"}}'
+  CURL: '{{.CURL | default "curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600"}}'
+  # file=phase, one line each. CACHE=off swaps the cache rule for the one bypass rule. Smart
+  # Tiered Cache is a one-time zone setting, not a call here.
+  RULESETS: |-
+    {{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings
+    transform-rules=http_request_transform
+    redirect-rules=http_request_dynamic_redirect
+    config-rules=http_config_settings
+
+tasks:
+  get:
+    desc: Print what the zone holds in the phases this directory manages, and who wrote it (PHASE= for one) - reads only
+    status: ['test -z "$CF_API_TOKEN" || test -z "$CF_ZONE_ID"']
+    silent: true
+    cmds:
+      - task: phase-known
+      - for: {var: RULESETS, split: "\n", as: R}
+        task: get-one
+        vars: {R: '{{.R}}'}
+
+  set:
+    desc: Put each ruleset on the zone when its sha256 differs from the version there (PHASE= for one), never over rules this repo did not write
+    status: ['test -z "$CF_API_TOKEN" || test -z "$CF_ZONE_ID"']
+    cmds:
+      - task: phase-known
+      - for: {var: RULESETS, split: "\n", as: R}
+        task: set-one
+        vars: {R: '{{.R}}'}
+
+  purge:
+    desc: Purge the URLs in URLS from the edge, 100 per call, and append each call's count to COUNT
+    requires: {vars: [URLS, COUNT]}
+    status: ['test ! -s {{.URLS}}']
+    cmds:
+      # 100 URLs per call; the sleep keeps it under 800 URLs/s. A failed call fails the run.
+      - >-
+        d=$(mktemp -d); split -l 100 -a 5 {{.URLS}} "$d/purge-";
+        for f in "$d"/purge-*; do
+        awk 'BEGIN { printf "{\"files\":[" } { printf "%s\"%s\"", (NR > 1 ? "," : ""), $0 } END { print "]}" }' "$f"
+        | {{.CURL}} -X POST -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @- \
+          "{{.CF}}/purge_cache" -o /dev/null;
+        wc -l < "$f" >> {{.COUNT}}; sleep 0.3; done
+
+  lint:
+    desc: Every ruleset here parses, holds a rule, carries the line set stamps, and names no host of its own
+    cmds:
+      - for: [bypass-rules, cache-rules, transform-rules, redirect-rules, config-rules]
+        task: lint-one
+        vars: {F: '{{.TASKFILE_DIR}}/{{.ITEM}}.json'}
+
+  # PHASE names one phase to work on; unset means all of them. A name that matches nothing is
+  # a typo, and a typo that quietly did nothing would read as "the zone is fine".
+  phase-known:
+    internal: true
+    silent: true
+    status: ['test -z "{{.PHASE}}"']
+    cmds:
+      # RULESETS is one file=phase per line, so it is quoted wherever it reaches a shell.
+      - >-
+        printf '%s\n' "{{.RULESETS}}" | grep -q "={{.PHASE}}$" ||
+        { printf 'unknown PHASE {{.PHASE}}; one of: %s\n' "$(printf '%s\n' "{{.RULESETS}}" | sed 's/.*=//' | tr '\n' ' ')" >&2; exit 1; }
+
+  get-one:
+    internal: true
+    silent: true
+    requires: {vars: [R]}
+    status: ['test -n "{{.PHASE}}" && test "{{.PHASE}}" != "$(echo {{.R}} | sed "s/.*=//")"']
+    cmds:
+      - |
+        r='{{.R}}'; f={{.TASKFILE_DIR}}/${r%%=*}; phase=${r#*=}
+        # A phase with no ruleset yet is a 404, which -f turns into a curl error line; that
+        # line is the answer, so it is left where it can be read.
+        now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true; })
+        n=$(printf '%s' "$now" | grep -c '"expression"' || true)
+        case "$n:$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)" in
+          0:*) echo "$phase: empty; ${f##*/}.json goes on as is" ;;
+          *:) echo "$phase: $n rule(s) NOT written by this repo; ${f##*/}.json is held back until they are gone" ;;
+          *)  echo "$phase: $n rule(s) already from ${f##*/}.json" ;;
+        esac
+        test -z "$now" || printf '  %s\n' "$now"
+
+  set-one:
+    internal: true
+    requires: {vars: [R, HOST]}
+    status: ['test -n "{{.PHASE}}" && test "{{.PHASE}}" != "$(echo {{.R}} | sed "s/.*=//")"']
+    # What goes on the zone is the file with HOST put in and the sha256 of that text as its
+    # description, so a fork that changes HOST changes the stamp and gets a PUT.
+    # A PUT replaces every rule in the phase, so it only ever lands on a phase that is empty
+    # or carries one of our stamps. Anything else is someone's own work: warn, skip, and
+    # leave the rest of the run alone.
+    # ponytail: the stamp is the only owner mark there is -- a rule added by hand to a phase
+    # we already wrote keeps our stamp and is overwritten. Reading the rules back and diffing
+    # them needs a JSON parser the toolbox does not carry.
+    cmds:
+      - |
+        r='{{.R}}'; f={{.TASKFILE_DIR}}/${r%%=*}; phase=${r#*=}; t=$(mktemp)
+        sed 's/@HOST@/{{.HOST}}/g' "$f.json" > "$t"
+        want=$(sed '/"description": *"sha256:/d' "$t" | shasum -a 256 | cut -c1-64)
+        # CURL carries -f, so a phase with no ruleset yet (404) leaves now empty; the
+        # || true keeps that from failing the assignment.
+        now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true; })
+        have=$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
+        n=$(printf '%s' "$now" | grep -c '"expression"' || true)
+        if test "$have" = "$want"; then echo "$phase: $n rule(s), already ${f##*/}.json"; exit 0; fi
+        if test "$n" -gt 0 && test -z "$have"; then
+          echo "::warning::$phase holds $n rule(s) this repo did not write, so ${f##*/}.json was not applied. Run task cloudflare:get, fold what you want to keep into the file, and the next run applies it." >&2
+          exit 0
+        fi
+        sed "s/sha256:STAMP/sha256:$want/" "$t" > "$t.json"
+        # The PUT answers with the ruleset it stored, so the stamp coming back is the after
+        # state: no second GET, and a write that did not take fails the run.
+        got=$({{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @"$t.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" |
+          sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
+        test "$got" = "$want" || { echo "$phase: PUT returned stamp '$got', wanted '$want'" >&2; exit 1; }
+        echo "$phase: ${f##*/}.json applied over $n rule(s) of ours"
+
+  lint-one:
+    internal: true
+    requires: {vars: [F]}
+    vars:
+      J: {sh: 'cat {{.F}}'}
+    cmds:
+      - test {{ (.J | fromJson).rules | len }} -ge 1
+      # set replaces this line with the sha256 of the rest of the file, so the file holds no
+      # hash of its own to go stale, and no hostname for a fork to change.
+      - 'test "$(grep -c ''"sha256:STAMP"'' {{.F}})" = 1'
+      - 'test "$(grep -c ''http\.host'' {{.F}})" = "$(grep -c ''@HOST@'' {{.F}})"'

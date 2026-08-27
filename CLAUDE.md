@@ -15,10 +15,14 @@ Everything is in a few files:
   `clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping`,
   where `batches` runs `fetch -> verify -> publish -> purge? -> checkpoint` per batch.
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
-- `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/index.html`, directory
-  URLs -> ctan.org, no HTML rewriting on the mirror host). `@HOST@` in them is filled from
-  `HOST` at PUT time, and `rules` PUTs one only when the sha256 of that text differs from
-  the description on the zone. `task zone` prints what is there now.
+- `cloudflare/`: every Cloudflare call, and the only optional part of the repo. Its
+  `Taskfile.yml` is included as `cloudflare:*` and its `README.md` is the page a fork reads
+  for the token. `task cloudflare:get` prints what the zone holds, `task cloudflare:set`
+  applies the rulesets (bypass cache, `/` -> `/index.html`, directory URLs -> ctan.org, no
+  HTML rewriting on the mirror host). `@HOST@` in them is filled from `HOST` at PUT time,
+  and a PUT happens only when the sha256 of that text differs from the description on the
+  zone. `sync` calls `cloudflare:set` only with `CF_ENABLE_AUTOMATION` set; unset, or with
+  the directory deleted, the pipeline never resolves it.
 - `docker/Dockerfile`: the toolbox image with the runner's tool versions.
   `task run -- task <args>` runs any task inside it with the repo at `/work`.
 - `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
@@ -36,9 +40,11 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
   `api.cloudflare.com`.
 - Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
   prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
-- Secrets are exactly seven: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
-  `AWS_REGION`, `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`; the workflow passes each to the
-  Taskfile by name. The last two are optional: without them `rules` is skipped.
+- Secrets are exactly eight: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
+  `AWS_REGION`, `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`, `CF_ENABLE_AUTOMATION`; the
+  workflow passes each to the Taskfile by name. Only the four `AWS_*` are needed to run.
+  `CF_ENABLE_AUTOMATION` is the switch that lets a run touch the zone at all; the token and
+  the zone id are what it needs once it is on.
 - Recompute any change that adds storage against the 133 GB baseline and the 200 GB ceiling.
 
 ## Must knows
@@ -87,8 +93,9 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   passes without `ping`, which also catches GitHub disabling the schedule after 60
   commit-free days. Pause the check before a seed — a multi-hour run outlasts the grace.
 - The edge cache is off (`CACHE=off`: one bypass rule, no purges). `CACHE=on` swaps in
-  `cache-rules.json` and purges changed keys per batch; switch it on only when R2 Class B
-  reads exceed 5M a month for two months.
+  `cache-rules.json` and purges changed keys per batch, `purge` computing the URLs here and
+  `cloudflare:purge` making the call; switch it on only when R2 Class B reads exceed 5M a
+  month for two months.
 
 ## Verifying a change
 
@@ -96,11 +103,13 @@ Every offline check runs inside the toolbox image; `fixtures/` (git-excluded) ho
 dante listing and a signed `tlpkg/` tree.
 
 - `task run -- task --dry --force sync` renders the pipeline without touching the network.
+  `--force` ignores every `status`, so it renders `cloudflare:set` too and wants the
+  directory present; plain `--dry` is the check for a fork that deleted it.
 - `task run -- task lint` validates `cloudflare/*.json` and the cron minute.
-- `task rules CF=file://<dir> CF_API_TOKEN=x CF_ZONE_ID=x` against a tree of
+- `task cloudflare:set CF=file://<dir> CF_API_TOKEN=x CF_ZONE_ID=x` against a tree of
   `rulesets/phases/<phase>/entrypoint` files: a phase holding rules this repo did not
   stamp must warn and skip, never PUT; one carrying the current stamp must report
-  `already` and make no call. `task zone` reads the same four phases and prints them.
+  `already` and make no call. `cloudflare/README.md` has the fixture.
 - `task run -- task normalise RUN=/work/fixtures/run` from a canned `listing.txt`.
 - `task run -- task diff RUN=<dir>` / `task plan RUN=<dir> STAGING=<dir>` from canned
   `upstream.txt`, `applied.txt`, `changed.txt`.
