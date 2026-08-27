@@ -85,20 +85,41 @@ tasks:
 
   rules:
     desc: Put each ruleset in cloudflare/ on the zone, but only when its sha256 differs from the version there (every PUT is a new version)
+    # Without the token the zone is left as it is; the mirror does not depend on the rules.
+    status: ['test -z "$CF_API_TOKEN"']
     vars:
       # file=phase. CACHE=off swaps the cache rule for the one bypass rule. Smart Tiered
-      # Cache is a one-time zone setting (caching.md), not a call here.
+      # Cache is a one-time zone setting, not a call here.
       RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect'
     cmds:
       - for: {var: RULESETS, as: R}
         cmd: >-
-          f=cloudflare/${R%%=*}.json; phase=${R#*=};
-          want=$(shasum -a 256 "$f" | cut -c1-64);
+          f=cloudflare/${R%%=*}; phase=${R#*=};
+          want=$(sed '/"description": *"sha256:/d' "$f.json" | shasum -a 256 | cut -c1-64);
           have=$({{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
           | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
           test "$have" = "$want" ||
           {{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json"
-          --data-binary @"$f" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null
+          --data-binary @"$f.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null
+
+  lint:
+    desc: Every cloudflare/*.json parses, holds a rule, and carries its own sha256; the cron minute matches CRON_MINUTE
+    cmds:
+      - for: [bypass-rules, cache-rules, transform-rules, redirect-rules]
+        task: lint-one
+        vars: {F: 'cloudflare/{{.ITEM}}.json'}
+      - 'test "$(sed -n "s/.*cron: ''\([0-9]*\) \* \* \* \*''.*/\1/p" .github/workflows/sync.yml)" = "{{.CRON_MINUTE}}"'
+
+  lint-one:
+    internal: true
+    requires: {vars: [F]}
+    vars:
+      J: {sh: 'cat {{.F}}'}
+    cmds:
+      - test {{ (.J | fromJson).rules | len }} -ge 1
+      # The stamp is the sha256 of the file without its own description line, so it does
+      # not depend on itself; rules computes the same recipe.
+      - 'test "$(sed -n ''s/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p'' {{.F}} | head -1)" = "$(sed ''/"description": *"sha256:/d'' {{.F}} | shasum -a 256 | cut -c1-64)"'
 
   list:
     desc: List dante and normalise it to RUN/upstream.txt as "path TAB size TAB mtime", byte-sorted
