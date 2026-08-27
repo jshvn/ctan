@@ -12,6 +12,8 @@ vars:
   S3: s3://{{.BUCKET}}
   URL: https://{{.HOST}}
   STATE: .state/applied.txt.xz                  # the listing of what the bucket holds; never in upstream
+  INDEXED: .state/indexed.txt.xz               # the state as the directory pages last showed it
+  INDEX: '{{.HOST}}.directory.index.html'      # the page index draws in every directory; no upstream path can carry the name
   RUN: '{{.ROOT_DIR}}/run'                      # run outputs; outside staging so nothing here is uploaded; git-ignored
   STAGING: '{{.ROOT_DIR}}/staging'
   TL: systems/texlive/tlnet                     # the one signed subtree
@@ -35,13 +37,20 @@ vars:
       tolower($1) == "content-length:" { c = $2 }
       $2 == "416" { z = 1 }
       END { sub(/\r/, "", r); sub(/\r/, "", c); print (r != "" ? r : (z ? 0 : c)) }'
-  # Path to URL path: percent-encode everything outside the unreserved set and "/" (23 CTAN
-  # paths carry spaces, 69 carry ( ) [ ] { } & # > ~ $). Reads paths, prints path TAB encoded.
-  ENCODE: |-
-    awk 'BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
-      { out = ""; for (j = 1; j <= length($0); j++) { c = substr($0, j, 1)
-          out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) }
-        print $0 "\t" out }'
+  # Percent-encoding for awk: enc(s) keeps the unreserved set and "/" and encodes the rest
+  # (23 CTAN paths carry spaces, 69 carry ( ) [ ] { } & # > ~ $). Spliced into ENCODE and render.
+  URLENC: |-
+    BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+    function enc(s,  out, j, c) { out = ""; for (j = 1; j <= length(s); j++) { c = substr(s, j, 1)
+        out = out ((c ~ /[A-Za-z0-9\/._~-]/) ? c : sprintf("%%%02X", ord[c])) } return out }
+  # Path to URL path. Reads paths, prints path TAB encoded.
+  ENCODE: >-
+    awk '{{.URLENC}} { print $0 "\t" enc($0) }'
+  # Every directory above the paths given (stdin, or a path-first TSV file), each once, as
+  # "a/b/" with the root as an empty line, so that directory INDEX is the page's key.
+  ANCESTORS: |-
+    awk -F'\t' '!("" in s) { s[""] = 1; print "" }
+      { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }'
   # Local runs happen inside the image built from docker/: Apple `container` when installed
   # and running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
   # image ships the runner's tool versions so the two agree.
@@ -405,6 +414,47 @@ tasks:
       - >-
         awk -F'\t' 'NR == FNR { drop[$1] = 1; next } !($1 in drop)' {{.B}} {{.RUN}}/applied.txt
         | cat - <(LC_ALL=C join -t "$(printf '\t')" {{.RUN}}/landed.txt {{.B}}) | LC_ALL=C sort > {{.RUN}}/applied.new
+
+  render:
+    desc: RUN/indexed.txt against RUN/applied.txt -> a page in STAGING/<dir>/INDEX for every directory a changed line touches, RUN/index-gone.txt for the pages of directories that emptied
+    set: [pipefail]
+    cmds:
+      - mkdir -p {{.STAGING}} && find {{.STAGING}} -mindepth 1 -delete
+      # A page changes when a file in its directory or a directory below it appears, changes
+      # or goes, so every ancestor of every changed line is redrawn. ponytail: about five
+      # pages per touched directory where one would often do; ceiling is Class A, a few
+      # hundred a day against a million free. Upgrade: comm the directory sets of the two
+      # files and redraw a parent only for a new or gone child.
+      - >-
+        LC_ALL=C comm -3 {{.RUN}}/indexed.txt {{.RUN}}/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'
+        | {{.ANCESTORS}} | LC_ALL=C sort > {{.RUN}}/index-dirty.txt
+      - '{{.ANCESTORS}} {{.RUN}}/applied.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
+      - LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt | awk -v i="{{.INDEX}}" '{ print $0 i }' > {{.RUN}}/index-gone.txt
+      - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
+      - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
+      # Entries, "dir TAB d|f TAB name TAB size TAB mtime", from the state: what the bucket
+      # holds, never upstream. Sorted, a directory's lines are contiguous with its
+      # subdirectories first, so each page is written once and closed. Names are
+      # percent-encoded in href and HTML-escaped in text (9 carry & < >). Relative hrefs
+      # resolve against the directory URL, which a rewrite leaves in the address bar.
+      - >-
+        test ! -s {{.RUN}}/index-make.txt ||
+        awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
+          { n = split($1, c, "/"); d = ""
+            for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
+            if (d in want) print d, "f", c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/applied.txt \
+        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v I="{{.INDEX}}" '{{.URLENC}}
+          function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
+          function open(d) { f = S d I; cur = d; live = 1
+            print "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Index of /" esc(d) "</title>" > f
+            print "<style>body{font-family:monospace;margin:2em}td,th{text-align:left;padding:0 1.5em 0 0}</style></head><body>" > f
+            print "<h1>Index of /" esc(d) "</h1><table><tr><th>Name</th><th>Last modified</th><th>Size</th></tr>" > f
+            if (d != "") print "<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>" > f }
+          function shut() { print "</table><p><a href=\"https://ctan.org/tex-archive/" enc(cur) "\">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.</p></body></html>" > f; close(f) }
+          !live || $1 != cur { if (live) shut(); open($1) }
+          $2 == "d" { print "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>" > f; next }
+          { print "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>" > f }
+          END { if (live) shut() }'
 
   checkpoint:
     internal: true
