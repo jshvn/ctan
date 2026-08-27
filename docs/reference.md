@@ -68,6 +68,7 @@ safely under the 4.995 GiB single-part ceiling — and `multipart_chunksize = 51
 |---|---|---|
 | Cache Rules | 10 | 1 to 2 |
 | Transform Rules | 10, no regex on Free | 1 |
+| Configuration Rules | 10 | 1, disabling the HTML rewriters on the mirror host |
 | Cacheable object size | 512 MB | 7 objects over it, served from R2 every time |
 | Purge by URL | 100 per call, 800 URLs/s per account | 0 while `CACHE=off` |
 | Purge everything | 5 per minute | unused |

@@ -1,0 +1,14 @@
+{
+  "name": "default",
+  "description": "sha256:STAMP",
+  "kind": "zone",
+  "phase": "http_config_settings",
+  "rules": [
+    {
+      "description": "the mirror serves files byte for byte: neither HTML rewriter may touch them",
+      "expression": "(http.host eq \"@HOST@\")",
+      "action": "set_config",
+      "action_parameters": {"email_obfuscation": false, "rocket_loader": false}
+    }
+  ]
+}

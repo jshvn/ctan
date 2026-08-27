@@ -54,14 +54,19 @@ nothing for bandwidth, so traffic doesn't move the bill.
 
 1. Fork [this repo](https://github.com/jshvn/ctan).
 2. Create an R2 bucket named `ctan`, an API token with Object Read & Write scoped to it,
-   and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`
-   and in `cloudflare/*.json`.
+   and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`;
+   it is the only line in the repo that names the hostname.
 3. Add the repository secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`
-   (`https://<account-id>.r2.cloudflarestorage.com`) and `AWS_REGION` (`auto`); optionally
-   `HEALTHCHECK_URL` (a healthchecks.io ping URL) and `CF_API_TOKEN` plus
-   `CF_ZONE_ID` (a token with the zone's Cache Rules, Transform Rules and Single Redirect
-   edit permissions) so the `/` rewrite and the directory redirects are applied from
-   `cloudflare/`; without them, add a Transform Rule rewriting `/` to `/index.html` by hand.
+   (`https://<account-id>.r2.cloudflarestorage.com`) and `AWS_REGION` (`auto`). Those four are
+   the whole requirement; three more are optional and none of them changes what the mirror
+   uploads. `HEALTHCHECK_URL` (a healthchecks.io ping URL) is how a run that stops arriving
+   reaches you. `CF_API_TOKEN` and `CF_ZONE_ID` (a token with the zone's Cache Rules,
+   Transform Rules, Single Redirect and Config Rules edit permissions) let the run put
+   `cloudflare/` on your zone: the cache setting, `/` rewritten to `/index.html`, directory
+   URLs sent to ctan.org, and Cloudflare's HTML rewriting turned off for your hostname.
+   Leave the pair out and `rules` is skipped, every run still syncs, and your zone keeps
+   whatever settings it already has — including a `/` that 404s until you add the rewrite by
+   hand.
 4. Actions -> sync -> Run workflow with `seed` checked and `max_batches` at 40. The first
    run uploads everything (about 133 GB, a few hours); every run after that pushes the
    hourly delta. Storage past R2's free 10 GB costs about $1.86 a month.

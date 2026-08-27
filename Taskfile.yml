@@ -82,7 +82,7 @@ tasks:
           "                    ${d}vars: BUCKET=<scratch> runs it for real without touching {{.BUCKET}}${r}" \
           "  task seed         First fill of an empty bucket: sync with SEED=true and no batch limit" \
           "                    ${d}one long run instead of MAX_BATCHES=4 an hour; repeat it to resume a cut-off seed${r}" \
-          "  task lint         cloudflare/*.json parse and match their sha256 stamp; cron minute agrees" \
+          "  task lint         cloudflare/*.json parse, hold a rule, name no host; cron minute agrees" \
           "" \
           "${c}offline checks -- no network, no credentials, every one inside the image${r}" \
           "  task --dry --force sync                                  render every command, run none" \
@@ -175,25 +175,28 @@ tasks:
     vars:
       # file=phase. CACHE=off swaps the cache rule for the one bypass rule. Smart Tiered
       # Cache is a one-time zone setting, not a call here.
-      RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect'
+      RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect config-rules=http_config_settings'
     cmds:
       - for: {var: RULESETS, as: R}
         # `as: R` binds the template var, not the shell one, so the item lands in $r first.
+        # What goes on the zone is the file with HOST put in and the sha256 of that text as
+        # its description, so a fork that changes HOST changes the stamp and gets a PUT.
         # CURL carries -f, so a phase with no ruleset yet (404) makes have empty; the || true
         # keeps that from failing the assignment, and the PUT below then always runs.
         cmd: >-
-          r='{{.R}}'; f=cloudflare/${r%%=*}; phase=${r#*=};
-          want=$(sed '/"description": *"sha256:/d' "$f.json" | shasum -a 256 | cut -c1-64);
+          r='{{.R}}'; f=cloudflare/${r%%=*}; phase=${r#*=}; t=$(mktemp);
+          sed 's/@HOST@/{{.HOST}}/g' "$f.json" > "$t";
+          want=$(sed '/"description": *"sha256:/d' "$t" | shasum -a 256 | cut -c1-64);
           have=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
           || true; } | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
-          test "$have" = "$want" ||
+          test "$have" = "$want" || { sed "s/sha256:STAMP/sha256:$want/" "$t" > "$t.json" &&
           {{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json"
-          --data-binary @"$f.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null
+          --data-binary @"$t.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null; }
 
   lint:
-    desc: Every cloudflare/*.json parses, holds a rule, and carries its own sha256; the cron minute matches CRON_MINUTE
+    desc: Every cloudflare/*.json parses, holds a rule, and carries the line rules stamps; the cron minute matches CRON_MINUTE
     cmds:
-      - for: [bypass-rules, cache-rules, transform-rules, redirect-rules]
+      - for: [bypass-rules, cache-rules, transform-rules, redirect-rules, config-rules]
         task: lint-one
         vars: {F: 'cloudflare/{{.ITEM}}.json'}
       - 'test "$(sed -n "s/.*cron: ''\([0-9]*\) \* \* \* \*''.*/\1/p" .github/workflows/sync.yml)" = "{{.CRON_MINUTE}}"'
@@ -205,9 +208,10 @@ tasks:
       J: {sh: 'cat {{.F}}'}
     cmds:
       - test {{ (.J | fromJson).rules | len }} -ge 1
-      # The stamp is the sha256 of the file without its own description line, so it does
-      # not depend on itself; rules computes the same recipe.
-      - 'test "$(sed -n ''s/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p'' {{.F}} | head -1)" = "$(sed ''/"description": *"sha256:/d'' {{.F}} | shasum -a 256 | cut -c1-64)"'
+      # rules replaces this line with the sha256 of the rest of the file, so the file holds
+      # no hash of its own to go stale, and no hostname for a fork to change.
+      - 'test "$(grep -c ''"sha256:STAMP"'' {{.F}})" = 1'
+      - 'test "$(grep -c ''http\.host'' {{.F}})" = "$(grep -c ''@HOST@'' {{.F}})"'
 
   list:
     desc: List dante and normalise it to RUN/upstream.txt as "path TAB size TAB mtime", byte-sorted

@@ -1,12 +1,12 @@
 {
   "name": "default",
-  "description": "sha256:3b29a3fcffca0616dc3e4931633c70f306c03053cfe9566711dfc2fc8778fbcb",
+  "description": "sha256:STAMP",
   "kind": "zone",
   "phase": "http_request_cache_settings",
   "rules": [
     {
       "description": "cache on: one day at the edge; 3xx and up never stored, so an added key needs no purge",
-      "expression": "(http.host eq \"ctan.ijosh.com\")",
+      "expression": "(http.host eq \"@HOST@\")",
       "action": "set_cache_settings",
       "action_parameters": {
         "cache": true,

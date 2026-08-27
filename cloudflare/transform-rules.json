@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "sha256:85169af80686a65597ef0bf58e7d93e16dd2c60cb6e499394de2aac9939c4476",
+  "description": "sha256:STAMP",
   "kind": "zone",
   "phase": "http_request_transform",
   "rules": [

@@ -16,7 +16,9 @@ Everything is in a few files:
   where `batches` runs `fetch -> verify -> publish -> purge? -> checkpoint` per batch.
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
 - `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/index.html`, directory
-  URLs -> ctan.org). `rules` applies one only when its stamped sha256 differs.
+  URLs -> ctan.org, no HTML rewriting on the mirror host). `@HOST@` in them is filled from
+  `HOST` at PUT time, and `rules` PUTs one only when the sha256 of that text differs from
+  the description on the zone.
 - `docker/Dockerfile`: the toolbox image with the runner's tool versions.
   `task run -- task <args>` runs any task inside it with the repo at `/work`.
 - `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
@@ -71,6 +73,11 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 - **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :42 and a slot
   can be dropped. `clock` records the lateness, `report` prints it, and `reconcile` keys on
   the slot's hour (03 UTC), not the clock's.
+- **Cloudflare's HTML rewriters must stay off for the mirror.** Email Address Obfuscation
+  injects a script into every `text/html` response and drops `content-length`, so the
+  bytes stop matching the listing and `smoke` fails on any HTML key it samples.
+  `cloudflare/config-rules.json` turns it and Rocket Loader off for `HOST` alone; the
+  rest of the zone keeps them.
 - **`index.html` at the root is CTAN's**, stored and served like every other file; the
   transform rule in `cloudflare/transform-rules.json` rewrites `/` to it. `README.md` is the
   documentation; there is no landing page of our own.

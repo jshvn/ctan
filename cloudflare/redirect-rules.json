@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "sha256:3b7fd36758633e23fdd59f5bd8379b6179044e19975533ae955835c7094901fb",
+  "description": "sha256:STAMP",
   "kind": "zone",
   "phase": "http_request_dynamic_redirect",
   "rules": [
