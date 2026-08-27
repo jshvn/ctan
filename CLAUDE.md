@@ -1,129 +1,100 @@
 # ctan
 
-A daily mirror of `CTAN/systems/texlive/tlnet` (the directory `tlmgr` installs from) on
-Cloudflare R2, served at `https://ctan.ijosh.com/systems/texlive/tlnet/`. About 17,400
-files and 6.8 GB; the largest file is ~145 MB.
+An hourly mirror of all of `CTAN/` (dante's `rsync://rsync.dante.ctan.org/CTAN/`) on
+Cloudflare R2, served at `https://ctan.ijosh.com/` with every CTAN path at the bucket root.
+About 496,000 objects and 133 GB; the largest file is 6.87 GB. Storage is the only bill,
+about $1.86 a month; the pipeline refuses to run past 175 GB upstream.
 
-Everything is in four files:
+The design and its evidence are in `docs/full-mirror/taskfile-architecture.md`; the other
+files in that directory are earlier drafts and are not authoritative.
+
+Everything is in a few files:
 
 - `Taskfile.yml`: the whole pipeline. `task sync` runs
-  `fetch -> verify -> guard -> publish -> smoke -> report -> ping -> page`.
-- `.github/workflows/sync.yml`: installs `task` and runs `task sync` daily at 03:30 UTC.
-- `.github/workflows/check.yml`: runs `task --dry sync` on pull requests.
-- `site/index.html`: the landing page at `https://ctan.ijosh.com/`. It repeats the README's
-  prose, so a README edit is usually a page edit too.
+  `clock -> rules -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping`,
+  where `batches` runs `fetch -> verify -> publish -> purge? -> checkpoint` per batch.
+- `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
+- `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/index.html`, directory
+  URLs -> ctan.org). `rules` applies one only when its stamped sha256 differs.
+- `tools/docker/ctan/Dockerfile`: the toolbox image with the runner's tool versions.
+  `task run -- task <args>` runs any task inside it with the repo at `/work`.
+- `.github/workflows/sync.yml`: hourly at :41, `timeout-minutes: 350`, dispatch inputs
+  `seed`, `reconcile`, `max_batches`, `cache`. `check.yml`: `task --dry --force sync` and
+  `task lint` on pull requests.
 
-`README.md` is for users. Operational detail belongs here and in Taskfile comments.
+`README.md` is for users and is the mirror's only documentation page; the root URL serves
+CTAN's own `index.html`. Operational detail belongs here and in Taskfile comments.
 
 ## Constraints
 
-- Zero running cost: R2 free tier (10 GB-month, 1M Class A ops) and free GitHub Actions.
-  Recompute any change that adds storage or uploads against the 6.8 GB baseline.
 - No shell scripts. Logic lives in `Taskfile.yml`; workflows install tools and run one task.
 - Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `xz`, `curl`,
-  `task`.
-  Network endpoints are exactly the CTAN master, R2, the public domain and healthchecks.io.
-- Objects stay under `systems/texlive/tlnet/`; every user's `tlmgr` config carries that path.
-- Secrets are exactly four: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
-  `HEALTHCHECK_URL`. The workflow maps the first three onto the AWS CLI's env vars.
+  `task`. Network endpoints are exactly dante, R2, the public domain, healthchecks.io and
+  `api.cloudflare.com`.
+- Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
+  prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
+- Secrets are exactly six: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+  `HEALTHCHECK_URL`, `CF_API_TOKEN`, `CF_ZONE_ID`. The last two are optional: without them
+  `rules` is skipped.
+- Recompute any change that adds storage against the 133 GB baseline and the 175 GB ceiling.
 
 ## Must knows
 
 Each of these is a bug that has happened or a bill that would. Do not undo them.
 
+- **The mirror is a list-diff, never a local tree.** The runner has 14 GB; the tree is 133 GB.
+  `list` takes dante's `rsync -rL --list-only`, `diff` compares it with the state file the
+  last run left in the bucket, and only the delta is fetched, in batches of at most 4 GB.
+  The bucket is listed only in the daily `reconcile`.
+- **The state line is `path TAB size TAB mtime`, path first, `LC_ALL=C` sorted.** Whole-line
+  `comm` mis-pairs lines in any other order. Every `sort`, `comm` and `join` runs with
+  `LC_ALL=C`, and every bucket listing is re-sorted because R2 lists keys out of byte order.
+- **The state records what landed.** `merge` joins the batch against `find staging -type f`,
+  so a path that vanished upstream between listing and fetch never enters the state.
 - **No versioned containers.** `tlmgr` requests `archive/foo.tar.xz`; upstream stores
-  `foo.r123.tar.xz` and symlinks to it. R2 has no symlinks, so `fetch` uses `rsync -L` and
-  excludes `*.r[0-9]*.tar.xz`. Storing both doubles storage and breaks the free tier.
-- **Never `--size-only`.** Revision bumps overwrite files in place, often at the same size.
-  `aws s3 sync` uploads when size differs or the local mtime is newer; `rsync -t` keeps
-  upstream mtimes, so same-size bumps are caught.
-- **Never `aws s3 sync --delete`.** R2 lists `install-tl` after `install-tl.zip.sha512.asc`
-  while the CLI walks staging in byte order, so the merge-join emits both an `upload:` and
-  a `delete:` for 15 keys and whichever lands last wins. Deletions come from `stale`, a
-  byte-sorted `comm` of the bucket listing against staging, fed to `aws s3 rm` (free on
-  R2). The 15 keys re-upload every run; that is harmless.
-- **Single-part uploads.** `aws.config` sets `multipart_threshold` above the largest file.
-  The CLI default is 8 MB, and multipart costs three or more Class A ops per file.
-- **`publish` uploads in a fixed order.** `archive/` first, then the full sync (which
-  carries the tlpdb), then deletions, so no client reads a tlpdb naming a container the
-  bucket lacks.
-- **The steps after `smoke` run in a fixed order too.** `report` before `ping` so a
-  healthchecks blip cannot lose the summary; `page` last so a broken landing page is one
-  email on a fresh mirror; `ping` after `smoke` so a broken domain never looks alive.
-- **`index.html` lives at the bucket root**, outside the mirror prefix, so `stale` never
-  sees it. It is uploaded with `Cache-Control: no-cache`. A Cloudflare Transform Rule
-  rewrites `/` to `/index.html`; without it the root is a 404 and the mirror still works.
-- **Do not trust the job log for counts.** GitHub drops lines when `publish` prints
-  thousands of `upload:` lines in seconds. `report` counts from `RUN` (`/tmp/tlnet-run`,
-  where `fetch` and `publish` `tee` under `pipefail`), not the job log. Judge completeness
-  by `smoke`, never by counting.
-- **A failed run is the only alert.** `guard` fails before `publish` if staging exceeds
-  10 GB; the mirror stays a day stale. healthchecks.io emails when a day passes without `ping`,
-  which also catches GitHub disabling the schedule after 60 commit-free days. Do not add
-  notification dependencies or upstream-freshness monitoring (tlnet goes quiet for weeks
-  before each release).
-- `.xz` is not in Cloudflare's default cache list, so there is no stale-edge problem. If a
-  cache-everything rule is ever added, `publish` needs a purge step before `smoke`.
-
-## Verification and security
-
-`verify` runs after `fetch` and before anything is uploaded. A tree that fails stays local;
-the previous good copy stays live.
-
-1. `texlive.tlpdb.sha512`, and at the tree root the `install-tl*.sha512` and
-   `update-tlmgr-latest.*.sha512` files, are checked with `shasum`, then their `.asc`
-   signatures with `gpgv`. These are the only signed files outside `archive/`. The keyring
-   is read as a plain file from the mirror being verified, so nothing is imported before
-   it is authenticated.
-2. Because the keyring came from the same mirror as the signature, the only real check is
-   the pinned fingerprint `TL_KEY`: `VALIDSIG` must end in it. Rotate it only against
-   https://www.tug.org/texlive/verify.html. `GOODSIG` is also required because gpgv reports
-   an expired or revoked key as `VALIDSIG` with exit 0 (tlmgr accepts that; the mirror is
-   stricter). The signing subkey expires 2027-07-13; upstream extends it yearly.
-3. `texlive.tlpdb.xz`, the file `tlmgr` actually downloads, decompresses to the verified
-   `texlive.tlpdb` byte for byte.
-4. No `*.r[0-9]*.tar.xz` survives in `archive/`.
-5. Every container the tlpdb names exists and matches its `containerchecksum`,
-   `doccontainerchecksum` or `srccontainerchecksum` (source containers are
-   `<name>.source.tar.xz`). A tree caught between a tlpdb update and its containers fails.
-
-After `publish`, `smoke` reads `texlive.tlpdb.sha512` back through the public domain and
-`cmp`s it with staging. `tlmgr` repeats the signature check on the client.
-
-Nothing else is signed upstream, so the rest is copied as-is: `install-tl`,
-`install-tl-windows.bat`, `README.md` and `texlive.tlpdb.md5`, plus `tlpkg/TeXLive/`,
-`tlpkg/installer/`, `tlpkg/tlperl/`, `tlpkg/tltcl/` and `tlpkg/translations/`. No TeX Live
-tool fetches those from a repository URL; they serve installs run from a local copy of the
-tree.
-
-## Repository guardrails
-
-- Actions are pinned to a full commit SHA with the version in a trailing comment (repo
-  setting rejects tags). The allowlist is GitHub-owned plus `go-task/*`.
-- Dependabot groups Actions bumps weekly; these are the only routine commits.
-- CodeQL default setup scans the workflows. Private vulnerability reporting is on and
-  `SECURITY.md` links to it.
-- PRs target `main` and are squash merged. `check.yml` must pass.
-- Commits: `<type>(<scope>): <summary>`, imperative, under 75 characters.
+  `foo.r123.tar.xz` and symlinks to it. `normalise` drops tlnet's and tlcontrib's
+  `*.r[0-9]*.tar.xz` and `update-tlmgr-r*`, and `fetch` uses `-L`, so each is stored once.
+- **A missing state file fails the run** unless `SEED=true` (empty bucket) or
+  `RECONCILE=true` (rebuild it from a bucket listing joined to upstream on size). Treating a
+  missing state as empty would re-upload 133 GB.
+- **The decision batch is last.** tlnet's `tlpkg/` and the root files (`timestamp` last of
+  all) go in the final batch, after every container, and `verify` refuses that batch unless
+  every container the tlpdb names is in the bucket after this run. `delete` waits for the
+  hour in which every batch has landed, so the live tlpdb never names a removed container.
+- **Never `aws s3 sync`.** `publish` is `aws s3 cp --recursive` (one PutObject per file,
+  never a destination listing). Deletions come from `diff`, 1,000 keys per `DeleteObjects`,
+  with the `Errors` array checked because the CLI exits 0 on it.
+- **`checkpoint` is the last step of a batch.** The state is written once per batch, after
+  the upload succeeded, as one PutObject. A run that dies anywhere repeats at most one batch
+  the next hour. A run that stops at `MAX_BATCHES` with batches left is a success.
+- **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :41 and a slot
+  can be dropped. `clock` records the lateness, `report` prints it, and `reconcile` keys on
+  the slot's hour (03 UTC), not the clock's.
+- **`index.html` at the root is CTAN's**, stored and served like every other file; the
+  transform rule in `cloudflare/transform-rules.json` rewrites `/` to it. `README.md` is the
+  documentation; there is no landing page of our own.
+- **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
+- **A failed run is the only alert.** healthchecks.io emails when its grace passes without
+  `ping`, which also catches GitHub disabling the schedule after 60 commit-free days.
+- The edge cache is off (`CACHE=off`: one bypass rule, no purges). `CACHE=on` swaps in
+  `cache-rules.json` and purges changed keys per batch; switch it on only when R2 Class B
+  reads exceed 5M a month for two months.
 
 ## Verifying a change
 
-- `task --dry sync` renders the pipeline without touching the network.
-- `task guard STAGING=<dir> LIMIT_MB=<n>` exercises the size check against any directory.
-- `task smoke URL=file:///<dir> STAGING=<dir>` exercises the read-back check offline.
-- `task ping` is a no-op without `HEALTHCHECK_URL`; set it to any `file://` URL.
-- `task stale RUN=<dir> STAGING=<dir>` diffs a canned `remote.txt` (one key per line) in
-  `<dir>` against `<dir>`'s files and writes `stale.txt`; it must be empty when every key
-  exists locally, and it must fail on an empty directory.
-- `task report RUN=<dir> STAGING=<dir>` renders the summary to stdout from a canned
-  `fetch.txt` (rsync `--stats` block) and `publish.txt` (`aws s3 sync` lines) in `<dir>`.
-- `task page` fails at the upload without credentials; run its `sed` by hand to see the
-  date filled in.
-- `task verify` needs a full `staging/`; with only `tlpkg/` and the root `install-tl*` and
-  `update-tlmgr-latest.*` files, every step but the last still runs (sha512, gpgv, GOODSIG,
-  the pin, the `.xz` match). A partial `archive/` fails the container check, as it should.
-- `publish` needs R2 credentials in `AWS_*` env vars; there is no mock, and the AWS CLI is
-  not installed locally by default.
-- Is the mirror fresh?
-  `curl -sI https://ctan.ijosh.com/systems/texlive/tlnet/tlpkg/texlive.tlpdb.sha512`
-  and read `last-modified`.
+Every offline check runs inside the toolbox image; `fixtures/` (git-excluded) holds a real
+dante listing and a signed `tlpkg/` tree. `docs/superpowers/plans/2026-08-26-full-mirror.md`
+lists the exact commands per task.
+
+- `task run -- task --dry --force sync` renders the pipeline without touching the network.
+- `task run -- task lint` validates `cloudflare/*.json` and the cron minute.
+- `task run -- task normalise RUN=/work/fixtures/run` from a canned `listing.txt`.
+- `task run -- task diff RUN=<dir>` / `task plan RUN=<dir> STAGING=<dir>` from canned
+  `upstream.txt`, `applied.txt`, `changed.txt`.
+- `task run -- task merge B=<batch> RUN=<dir> STAGING=<dir>` for the state arithmetic.
+- `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
+  `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
+- `task run -- task smoke RUN=<dir> URL=file:///work/<dir>`; `task retry CMD='exit 5' RETRY_BASE=0`.
+- `publish`, `checkpoint`, `delete`, `rebuild`, `rules` need credentials; use a scratch
+  bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
+- Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
