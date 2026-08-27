@@ -18,7 +18,7 @@ Everything is in a few files:
 - `cloudflare/*.json`: the zone's rulesets (bypass cache, `/` -> `/index.html`, directory
   URLs -> ctan.org, no HTML rewriting on the mirror host). `@HOST@` in them is filled from
   `HOST` at PUT time, and `rules` PUTs one only when the sha256 of that text differs from
-  the description on the zone.
+  the description on the zone. `task zone` prints what is there now.
 - `docker/Dockerfile`: the toolbox image with the runner's tool versions.
   `task run -- task <args>` runs any task inside it with the repo at `/work`.
 - `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
@@ -97,6 +97,10 @@ dante listing and a signed `tlpkg/` tree.
 
 - `task run -- task --dry --force sync` renders the pipeline without touching the network.
 - `task run -- task lint` validates `cloudflare/*.json` and the cron minute.
+- `task rules CF=file://<dir> CF_API_TOKEN=x CF_ZONE_ID=x` against a tree of
+  `rulesets/phases/<phase>/entrypoint` files: a phase holding rules this repo did not
+  stamp must warn and skip, never PUT; one carrying the current stamp must report
+  `already` and make no call. `task zone` reads the same four phases and prints them.
 - `task run -- task normalise RUN=/work/fixtures/run` from a canned `listing.txt`.
 - `task run -- task diff RUN=<dir>` / `task plan RUN=<dir> STAGING=<dir>` from canned
   `upstream.txt`, `applied.txt`, `changed.txt`.

@@ -226,6 +226,18 @@ curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_
 If upstream still has the key, the daily reconcile finds it missing and the next hourly run
 re-fetches it. Editing the state by hand to get it back sooner is not worth the risk.
 
+**A ruleset was not applied.** `rules` prints a warning naming the phase and moves on when
+the phase holds rules this repo did not write; the run still succeeds. It PUTs the whole
+phase at once, so applying it would delete them.
+
+```sh
+task zone     # what each phase holds now, and whether its description carries our stamp
+```
+
+Fold anything worth keeping into that phase's file in `cloudflare/` — a ruleset's `rules`
+array takes as many entries as the plan allows — or clear the phase in the dashboard. The
+next run applies the file and stamps it, and from then on the phase is ours to rewrite.
+
 **Rotate a secret.**
 
 ```sh

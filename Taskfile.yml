@@ -23,6 +23,9 @@ vars:
   SEED: '{{.SEED | default "false"}}'           # true: a missing state file means an empty bucket
   RECONCILE: '{{.RECONCILE | default "auto"}}'  # true, false, or auto (the run whose slot is in hour 03 UTC); true also rebuilds a missing state
   CACHE: '{{.CACHE | default "off"}}'           # off: one bypass rule, no purges; on: cache rule and purges
+  # file=phase, read by rules and zone. CACHE=off swaps the cache rule for the one bypass
+  # rule. Smart Tiered Cache is a one-time zone setting, not a call here.
+  RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect config-rules=http_config_settings'
   RETRY_BASE: 15                                # seconds; the retry sleeps are RETRY_BASE * 2^i plus jitter (0 makes retry instant for tests)
   RSYNC: rsync --timeout=300 --contimeout=60 --no-h
   CURL: curl -fsS --connect-timeout 15 --max-time 60 --retry 6 --retry-connrefused --retry-max-time 600
@@ -83,6 +86,8 @@ tasks:
           "  task seed         First fill of an empty bucket: sync with SEED=true and no batch limit" \
           "                    ${d}one long run instead of MAX_BATCHES=4 an hour; repeat it to resume a cut-off seed${r}" \
           "  task lint         cloudflare/*.json parse, hold a rule, name no host; cron minute agrees" \
+          "  task zone         What the zone holds in the phases cloudflare/ manages, and who wrote it" \
+          "                    ${d}reads only; needs CF_API_TOKEN and CF_ZONE_ID${r}" \
           "" \
           "${c}offline checks -- no network, no credentials, every one inside the image${r}" \
           "  task --dry --force sync                                  render every command, run none" \
@@ -167,31 +172,60 @@ tasks:
         awk -v m={{.CRON_MINUTE}} '{ late = ((int($1 / 60) % 60 - m + 60) % 60) * 60 + $1 % 60;
           printf "%d %d\n", late, int(($1 - late) / 3600) % 24 }' {{.RUN}}/start.txt > {{.RUN}}/late.txt
 
+  zone:
+    desc: Print what the zone holds in the phases cloudflare/ manages, and who wrote it - reads only
+    status: ['test -z "$CF_API_TOKEN" || test -z "$CF_ZONE_ID"']
+    silent: true
+    cmds:
+      - for: {var: RULESETS, as: R}
+        cmd: |
+          r='{{.R}}'; f=cloudflare/${r%%=*}; phase=${r#*=}
+          now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" 2>/dev/null || true; })
+          n=$(printf '%s' "$now" | grep -c '"expression"' || true)
+          case "$n:$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)" in
+            0:*) echo "$phase: empty; $f.json goes on as is" ;;
+            *:) echo "$phase: $n rule(s) NOT written by this repo; $f.json is held back until they are gone" ;;
+            *)  echo "$phase: $n rule(s) already from $f.json" ;;
+          esac
+          test -z "$now" || printf '  %s\n' "$now"
+
   rules:
-    desc: Put each ruleset in cloudflare/ on the zone, but only when its sha256 differs from the version there (every PUT is a new version)
+    desc: Put each ruleset in cloudflare/ on the zone when its sha256 differs from the version there, and never over rules this repo did not write
     # Without both the token and the zone id the zone is left as it is; the mirror does not
     # depend on the rules.
     status: ['test -z "$CF_API_TOKEN" || test -z "$CF_ZONE_ID"']
-    vars:
-      # file=phase. CACHE=off swaps the cache rule for the one bypass rule. Smart Tiered
-      # Cache is a one-time zone setting, not a call here.
-      RULESETS: '{{if eq .CACHE "on"}}cache-rules{{else}}bypass-rules{{end}}=http_request_cache_settings transform-rules=http_request_transform redirect-rules=http_request_dynamic_redirect config-rules=http_config_settings'
     cmds:
       - for: {var: RULESETS, as: R}
         # `as: R` binds the template var, not the shell one, so the item lands in $r first.
         # What goes on the zone is the file with HOST put in and the sha256 of that text as
         # its description, so a fork that changes HOST changes the stamp and gets a PUT.
-        # CURL carries -f, so a phase with no ruleset yet (404) makes have empty; the || true
-        # keeps that from failing the assignment, and the PUT below then always runs.
-        cmd: >-
-          r='{{.R}}'; f=cloudflare/${r%%=*}; phase=${r#*=}; t=$(mktemp);
-          sed 's/@HOST@/{{.HOST}}/g' "$f.json" > "$t";
-          want=$(sed '/"description": *"sha256:/d' "$t" | shasum -a 256 | cut -c1-64);
-          have=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint"
-          || true; } | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1);
-          test "$have" = "$want" || { sed "s/sha256:STAMP/sha256:$want/" "$t" > "$t.json" &&
-          {{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json"
-          --data-binary @"$t.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" -o /dev/null; }
+        # A PUT replaces every rule in the phase, so it only ever lands on a phase that is
+        # empty or carries one of our stamps. Anything else is someone's own work: warn,
+        # skip, and leave the rest of the run alone.
+        # ponytail: the stamp is the only owner mark there is -- a rule added by hand to a
+        # phase we already wrote keeps our stamp and is overwritten. Reading the rules back
+        # and diffing them needs a JSON parser the toolbox does not carry.
+        cmd: |
+          r='{{.R}}'; f=cloudflare/${r%%=*}; phase=${r#*=}; t=$(mktemp)
+          sed 's/@HOST@/{{.HOST}}/g' "$f.json" > "$t"
+          want=$(sed '/"description": *"sha256:/d' "$t" | shasum -a 256 | cut -c1-64)
+          # CURL carries -f, so a phase with no ruleset yet (404) leaves now empty; the
+          # || true keeps that from failing the assignment.
+          now=$({ {{.CURL}} -H "Authorization: Bearer $CF_API_TOKEN" "{{.CF}}/rulesets/phases/$phase/entrypoint" || true; })
+          have=$(printf '%s' "$now" | sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
+          n=$(printf '%s' "$now" | grep -c '"expression"' || true)
+          if test "$have" = "$want"; then echo "$phase: $n rule(s), already $f.json"; exit 0; fi
+          if test "$n" -gt 0 && test -z "$have"; then
+            echo "::warning::$phase holds $n rule(s) this repo did not write, so $f.json was not applied. Run task zone, fold what you want to keep into the file, and the next run applies it." >&2
+            exit 0
+          fi
+          sed "s/sha256:STAMP/sha256:$want/" "$t" > "$t.json"
+          # The PUT answers with the ruleset it stored, so the stamp coming back is the
+          # after state: no second GET, and a write that did not take fails the run.
+          got=$({{.CURL}} -X PUT -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data-binary @"$t.json" "{{.CF}}/rulesets/phases/$phase/entrypoint" |
+            sed -n 's/.*"description": *"sha256:\([0-9a-f]*\)".*/\1/p' | head -1)
+          test "$got" = "$want" || { echo "$phase: PUT returned stamp '$got', wanted '$want'" >&2; exit 1; }
+          echo "$phase: $f.json applied over $n rule(s) of ours"
 
   lint:
     desc: Every cloudflare/*.json parses, holds a rule, and carries the line rules stamps; the cron minute matches CRON_MINUTE
