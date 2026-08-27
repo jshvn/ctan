@@ -1,24 +1,50 @@
 name: sync
 on:
   schedule:
-    - cron: '30 3 * * *'   # dante publishes tlnet daily; pick a slot after the mirrors catch up
+    - cron: '41 * * * *'   # hourly at a fixed minute; runs start 15 to 45 minutes after it
   workflow_dispatch:
+    inputs:
+      seed:
+        description: 'The bucket is empty and there is no state file: upload everything'
+        type: boolean
+        default: false
+      reconcile:
+        description: 'List the bucket and rebuild the state this run (also bootstraps a missing state)'
+        type: boolean
+        default: false
+      max_batches:
+        description: 'Batches to work this run (4 GB each; the rest wait for the next hour)'
+        type: string
+        default: '4'
+      cache:
+        description: 'Cache rule and purges: on or off'
+        type: choice
+        options: [off, on]
+        default: off
 permissions:
   contents: read
-concurrency: sync
+concurrency:
+  group: sync
+  cancel-in-progress: false   # one run at a time; a slot that fires during a run waits and starts the moment it ends
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # four times the slowest run seen; every step has its own timeout
+    timeout-minutes: 350   # under the 6-hour job limit; every batch checkpoints, so a cut-off costs one batch
     env:
-      # The AWS CLI ships on ubuntu-latest; these four env vars are its whole R2 config.
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
       AWS_REGION: auto
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
       HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-      - run: aws --version   # record in every run's log which build did the upload
-      - run: task sync
+      - run: aws --version && rsync --version | head -1 && df -h .
+      - run: >-
+          task sync
+          SEED=${{ inputs.seed == true }}
+          RECONCILE=${{ inputs.reconcile == true && 'true' || 'auto' }}
+          MAX_BATCHES=${{ inputs.max_batches || '4' }}
+          CACHE=${{ inputs.cache || 'off' }}
