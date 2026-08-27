@@ -52,19 +52,40 @@ nothing for bandwidth, so traffic doesn't move the bill.
 
 ## Want your own?
 
-1. Fork [this repo](https://github.com/jshvn/ctan).
-2. Create an R2 bucket named `ctan`, an API token with Object Read & Write scoped to it,
-   and a custom domain pointing at the bucket. Set `HOST` to that domain in `Taskfile.yml`
-   and in `cloudflare/*.json`.
-3. Add the repository secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`
-   (`https://<account-id>.r2.cloudflarestorage.com`) and `AWS_REGION` (`auto`); optionally
-   `HEALTHCHECK_URL` (a healthchecks.io ping URL) and `CF_API_TOKEN` plus
-   `CF_ZONE_ID` (a token with the zone's Cache Rules, Transform Rules and Single Redirect
-   edit permissions) so the `/` rewrite and the directory redirects are applied from
-   `cloudflare/`; without them, add a Transform Rule rewriting `/` to `/index.html` by hand.
-4. Actions -> sync -> Run workflow with `seed` checked and `max_batches` at 40. The first
-   run uploads everything (about 133 GB, a few hours); every run after that pushes the
-   hourly delta. Storage past R2's free 10 GB costs about $1.86 a month.
+1. Fork [this repo](https://github.com/jshvn/ctan) and create an R2 bucket named `ctan` with
+   a custom domain pointing at it.
+2. Set `HOST` in `Taskfile.yml` to that domain — the only line in the repo that names the
+   hostname.
+3. Add the four repository secrets below. They are the whole requirement.
+4. Actions -> sync -> Run workflow, with `seed` checked and `max_batches` at 40. The first
+   run uploads everything (about 133 GB, a few hours); every run after it pushes the hourly
+   delta. Storage past R2's free 10 GB costs about $1.86 a month.
+
+| Secret | What it is |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` | R2 API token with Object Read & Write on the bucket |
+| `AWS_SECRET_ACCESS_KEY` | That token's secret |
+| `AWS_ENDPOINT_URL` | `https://<account-id>.r2.cloudflarestorage.com` |
+| `AWS_REGION` | `auto` |
+
+## Optional configuration
+
+| Secret | What it turns on |
+| --- | --- |
+| `HEALTHCHECK_URL` | A healthchecks.io ping URL. The last step of every run pings it |
+
+**Alerting.** `HEALTHCHECK_URL` is the only alert the mirror has: a failed or missing run
+stops the ping, and healthchecks.io mails you when the grace passes. Point a check at cron
+`42 * * * *` UTC with a 3 hour grace, which absorbs one dropped slot and a late full run.
+Unset, a run that stops arriving tells nobody. Pause the check before a seed — a multi-hour
+run outlasts any sensible grace.
+
+**Zone rules.** Four rules are worth setting on the zone by hand: HTML rewriters off (the
+one that matters — Cloudflare otherwise alters every HTML file it serves), cache bypass, `/`
+rewritten to `/index.html`, and directory URLs sent to ctan.org. The pipeline does not touch
+Cloudflare and needs no zone token; section 6 of
+[`docs/reference.md`](docs/reference.md) has each rule, its expression and its settings.
+Skip them and every run still syncs, but `/` is a 404 and HTML is served rewritten.
 
 To run the pipeline locally, `task run -- task --dry sync` renders it inside the toolbox
 image (Apple `container` or Docker); with `AWS_*` variables exported, `task run -- task sync`
