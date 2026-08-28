@@ -24,6 +24,9 @@ For a fresh install, give the installer the same URL:
 install-tl -repository https://ctan.ijosh.com/systems/texlive/tlnet/
 ```
 
+Browse it: any directory URL, `https://ctan.ijosh.com/systems/knuth/`, lists what the
+mirror holds there.
+
 To go back to CTAN's mirror rotation: `tlmgr option repository ctan`.
 
 ## How it works
@@ -82,10 +85,12 @@ run outlasts any sensible grace.
 
 **Zone rules.** Four rules are worth setting on the zone by hand: HTML rewriters off (the
 one that matters — Cloudflare otherwise alters every HTML file it serves), cache bypass, `/`
-rewritten to `/index.html`, and directory URLs sent to ctan.org. The pipeline does not touch
+rewritten to `/index.html`, and every other directory URL rewritten to the mirror's own page
+for that directory. The pipeline does not touch
 Cloudflare and needs no zone token; section 6 of
 [`docs/reference.md`](docs/reference.md) has each rule, its expression and its settings.
-Skip them and every run still syncs, but `/` is a 404 and HTML is served rewritten.
+Skip them and every run still syncs, but `/` and every directory URL are 404s and HTML is
+served rewritten.
 
 To run the pipeline locally, `task run -- task --dry sync` renders it inside the toolbox
 image (Apple `container` or Docker); with `AWS_*` variables exported, `task run -- task sync`

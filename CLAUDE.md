@@ -12,7 +12,7 @@ model, the healthcheck settings and the runbook.
 Everything is in a few files:
 
 - `Taskfile.yml`: the whole pipeline. Bare `task` prints the menu; `task sync` runs
-  `clock -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping`,
+  `clock -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> index -> smoke -> report -> ping`,
   where `batches` runs `fetch -> verify -> publish -> checkpoint` per batch.
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
 - `docker/Dockerfile`: the toolbox image with the runner's tool versions.
@@ -32,6 +32,8 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
   The zone is configured by hand; nothing here calls the Cloudflare API.
 - Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
   prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
+  `<HOST>.directory.index.html` is the one reserved file name: the page `index` draws in every
+  directory, a name no upstream path can carry.
 - Secrets are exactly five: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
   `AWS_REGION`, `HEALTHCHECK_URL`; the workflow passes each to the Taskfile by name. The four
   `AWS_*` are the whole requirement; without `HEALTHCHECK_URL`, `ping` is skipped.
@@ -76,8 +78,17 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   `content-length` on `text/html` either way, which is why `smoke` sizes an object from a
   one-byte ranged read and not a HEAD.
 - **`index.html` at the root is CTAN's**, stored and served like every other file; the
-  zone's transform rule rewrites `/` to it. `README.md` is the documentation; there is no
-  landing page of our own.
+  zone's transform rule rewrites `/` to it, and a second one rewrites every other directory
+  URL to that directory's page. `README.md` is the documentation; there is no landing page
+  of our own.
+- **Directory pages are drawn from the state, never from upstream.** R2 has no listings, so
+  `index` writes `<dir>/<HOST>.directory.index.html` for every directory a run changed, from
+  `applied.txt` (what the bucket holds), and `.state/indexed.txt.xz` records the state the
+  pages last showed, so a run that dies before advancing it redraws the same pages next
+  hour. No page enters the state (`merge` joins staging against the batch) and `reconcile`
+  never counts one as an orphan. A missing `indexed` redraws all 27k once. The zone's
+  second transform rule serves `/dir/` from that key; without it the pages exist and
+  nothing else changes.
 - **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
 - **A failed run is the only alert.** The check is cron `42 * * * *` UTC with a 3 h grace,
   which absorbs one dropped slot plus a late full run; healthchecks.io emails when the grace
@@ -99,10 +110,14 @@ dante listing and a signed `tlpkg/` tree.
 - `task run -- task diff RUN=<dir>` / `task plan RUN=<dir> STAGING=<dir>` from canned
   `upstream.txt`, `applied.txt`, `changed.txt`.
 - `task run -- task merge B=<batch> RUN=<dir> STAGING=<dir>` for the state arithmetic.
+- `task run -- task render RUN=<dir> STAGING=<dir>` from canned `applied.txt` and
+  `indexed.txt`; run it on a real listing only inside the image, because CTAN has
+  `obsolete/support/TeXshell/` and `texshell/` and a case-insensitive disk merges their
+  pages.
 - `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
   `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
 - `task run -- task smoke RUN=<dir> URL=file:///work/<dir>`; `task retry CMD='exit 5' RETRY_BASE=0`.
-- `publish`, `checkpoint`, `delete`, `rebuild` need credentials; use a scratch
+- `publish`, `checkpoint`, `delete`, `rebuild`, `index` need credentials; use a scratch
   bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
 
