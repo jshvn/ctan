@@ -81,12 +81,19 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 - **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :42 and a slot
   can be dropped. `clock` records the lateness, `report` prints it, and `reconcile` keys on
   the slot's hour (03 UTC), not the clock's.
-- **Cloudflare's HTML rewriters must stay off for the mirror.** Email Address Obfuscation
-  injects a script into every `text/html` response and changes its length, so the bytes stop
-  matching CTAN's. A zone Configuration Rule turns it and Rocket Loader off for the mirror's
-  hostname alone; `docs/reference.md` section 6 has it. Cloudflare also sends no
-  `content-length` on `text/html` either way, which is why `smoke` sizes an object from a
-  one-byte ranged read and not a HEAD.
+- **Four Cloudflare defaults must stay off for the mirror.** One zone Configuration Rule
+  turns all four off for the mirror's hostname alone, and `docs/reference.md` section 6 has
+  each with its expression. Three of them alter `text/html` in flight, so the bytes stop
+  matching CTAN's and a mirror that alters them is not a mirror: Email Obfuscation injects a
+  script and encodes mailto addresses, Rocket Loader injects another, and Automatic HTTPS
+  Rewrites turns plain `http://` links into `https://` — that last one can leave the length
+  unchanged while the bytes differ, because the parser it runs inside also collapses
+  whitespace in the tag it touched, which is why `smoke`'s canary compares the R2 object with
+  the response rather than their lengths. The fourth, Browser Integrity Check, answers 403 to
+  `libwww-perl`, `LWP`, `Python-urllib` and `PycURL`, all of which every other CTAN mirror
+  serves; `smoke` asks for `/timestamp` as `libwww-perl` to catch it coming back. Cloudflare
+  also sends no `content-length` on `text/html` whatever these are set to, which is why
+  `smoke` sizes an object from a one-byte ranged read and not a HEAD.
 - **`index.html` at the root is CTAN's**, stored and served like every other file; the
   zone's transform rule rewrites `/` to it, and a second one rewrites every other directory
   URL to that directory's page. `README.md` is the documentation; there is no landing page
