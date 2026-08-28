@@ -89,7 +89,8 @@ rewritten to `/index.html`, and every other directory URL rewritten to the mirro
 for that directory. The pipeline does not touch
 Cloudflare and needs no zone token; section 6 of
 [`docs/reference.md`](docs/reference.md) has each rule, its expression and its settings.
-Skip them and every run still syncs, but `/` is a 404 and HTML is served rewritten.
+Skip them and every run still syncs, but `/` and every directory URL are 404s and HTML is
+served rewritten.
 
 To run the pipeline locally, `task run -- task --dry sync` renders it inside the toolbox
 image (Apple `container` or Docker); with `AWS_*` variables exported, `task run -- task sync`

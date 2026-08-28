@@ -117,7 +117,7 @@ dante listing and a signed `tlpkg/` tree.
 - `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
   `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
 - `task run -- task smoke RUN=<dir> URL=file:///work/<dir>`; `task retry CMD='exit 5' RETRY_BASE=0`.
-- `publish`, `checkpoint`, `delete`, `rebuild` need credentials; use a scratch
+- `publish`, `checkpoint`, `delete`, `rebuild`, `index` need credentials; use a scratch
   bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
 
