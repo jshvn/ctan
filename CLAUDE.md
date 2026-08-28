@@ -139,7 +139,10 @@ dante listing and a signed `tlpkg/` tree.
   each key. The runner is ext4 and draws both.
 - `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
   `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
-- `task run -- task smoke RUN=<dir> URL=file:///work/<dir>`; `task retry CMD='exit 5' RETRY_BASE=0`.
+- `task run -- task smoke RUN=<dir> STAGING=<dir> URL=file:///work/<dir>`; `task retry
+  CMD='exit 5' RETRY_BASE=0`. `STAGING` is what sizes the page the fixture serves, so the
+  page check runs rather than being skipped; over `file://` only the INDEX key is read,
+  because a filesystem cannot hold both `a/b` and `a/b/`.
 - `publish`, `checkpoint`, `delete`, `rebuild`, `index` need credentials; use a scratch
   bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.

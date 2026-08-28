@@ -119,7 +119,8 @@ tasks:
           "  task run -- task plan RUN=<dir> STAGING=<dir>            changed.txt -> batch-NNNN.txt" \
           "  task run -- task merge B=<batch> RUN=<dir> STAGING=<dir> the state arithmetic" \
           "  task run -- task render RUN=<dir> STAGING=<dir>          indexed.txt vs applied.txt -> directory pages" \
-          "  task run -- task smoke RUN=<dir> URL=file:///work/<dir>" \
+          "  task run -- task smoke RUN=<dir> STAGING=<dir> URL=file:///work/<dir>" \
+          "                    ${d}the page check needs STAGING; over file:// only the INDEX key is read${r}" \
           "  task run -- task retry CMD='exit 5' RETRY_BASE=0" \
           "  ${d}all of them read fixtures/ (git-excluded): a real dante listing and a signed tlpkg/ tree${r}" \
           "" \
@@ -605,10 +606,15 @@ tasks:
       # sized against the copy still in staging, the same one-byte ranged read as the sample
       # above. Both keys hold the same bytes, so one staged copy sizes both. The root is
       # drawn but has no slashless key, and / is CTAN's own index.html.
+      # ${d} in braces: the INDEX that follows it opens with a letter, and $d{{.INDEX}} names
+      # a variable that does not exist. test -n makes that a stated failure, not a size of "".
+      # The slashless key is read only over http: the offline harness serves the pages off a
+      # filesystem, which cannot hold both a/b and a/b/, the same fact the second key rests on.
       - >-
         test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
-        want=$(wc -c < "{{.STAGING}}/$d{{.INDEX}}" | tr -d ' ');
-        printf '%s\n' "$d" | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }'
+        want=$(wc -c < "{{.STAGING}}/${d}{{.INDEX}}" | tr -d ' '); test -n "$want";
+        case "{{.URL}}" in http*) b=1 ;; *) b=0 ;; esac;
+        printf '%s\n' "$d" | awk -v i="{{.INDEX}}" -v b="$b" '{ print $0 i } b == 1 && $0 != "" { print substr($0, 1, length($0) - 1) }'
         | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
         got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
         echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done; }
