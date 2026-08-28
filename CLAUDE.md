@@ -72,6 +72,9 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   all) go in the final batch, after every container, and `verify` refuses that batch unless
   every container the tlpdb names is in the bucket after this run. `delete` waits for the
   hour in which every batch has landed, so the live tlpdb never names a removed container.
+  `smoke` names `/timestamp` twice and asks for it only when the state records it: a seed
+  capped at `MAX_BATCHES` has not reached the decision batch, and the bucket answers 404 to a
+  key it has never held.
 - **Never `aws s3 sync`.** `publish` is `aws s3 cp --recursive` (one PutObject per file,
   never a destination listing). Deletions come from `diff`, 1,000 keys per `DeleteObjects`,
   with the `Errors` array checked because the CLI exits 0 on it.
@@ -144,7 +147,9 @@ dante listing and a signed `tlpkg/` tree.
   filesystem and the host's case sensitivity is what counts: CTAN has
   `obsolete/support/TeXshell/` and `texshell/`, which a macOS disk merges into one entry
   holding one of the two pages. Expect a full render there to come out one page short under
-  each key. The runner is ext4 and draws both.
+  each key. The runner is ext4 and draws both. `run-root`, whose two files differ only in
+  the `timestamp` line, is the hour whose one dirty directory is the root: it must exit 0
+  and leave `SLASH` empty.
 - `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/ RSYNC='rsync
   --timeout=300 --no-h'` and `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree`
   for the signed checks. `run-tl`'s batch is `b1.txt`; `run-tl-bad`'s is `changed.txt`.
@@ -160,7 +165,7 @@ dante listing and a signed `tlpkg/` tree.
   bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
 
-Seven hazards, each of which has cost an evening:
+Eight hazards, each of which has cost an evening:
 
 - **A `>-` folded block keeps the newline** when a continuation line is indented further
   than the lines around it, and the rendered shell then splits into two commands. End the
@@ -178,6 +183,13 @@ Seven hazards, each of which has cost an evening:
   writes under `RUN/tl` must be guarded on the batch carrying a tlnet path, or it dies on a
   redirect into a directory nobody made -- rare enough to pass every fixture and every CI
   run and still break a live hour.
+- **GNU `xargs` runs its command once on empty input.** A guard on the file feeding the pipe
+  is not a guard on what reaches `xargs`: `render`'s `SLASH` awk drops the root, which has no
+  slashless key, so an hour whose only dirty directory is the root sends it nothing and it
+  runs `mkdir -p` with no operands. Two ordinary hours are that hour -- one where the delta is
+  root files alone (`timestamp` by itself), and one where a deletion takes the last file under
+  a top-level directory, leaving no dirty directory that still exists. Every `xargs` whose
+  input can be filtered down to nothing takes `-r`.
 - **Only what `RUNNER` names crosses into the container.** `report` reads
   `GITHUB_STEP_SUMMARY`, whose value is a path on the runner, so the variable is passed *and*
   the file bind-mounted at that same path; `GITHUB_EVENT_NAME` rides along, without which

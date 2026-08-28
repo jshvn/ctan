@@ -466,12 +466,15 @@ tasks:
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
       # SLASH/<depth>/ holds the slashless copies of the pages at that depth. Every file in
       # one tree has the same number of components, so no file is another's parent directory
-      # and the tree can be uploaded whole.
+      # and the tree can be uploaded whole. -r because the root is the one directory with no
+      # slashless key: an hour whose only dirty directory is the root -- root files alone, or
+      # a deletion that leaves no dirty directory still standing -- gives this awk nothing to
+      # print, and xargs without it runs mkdir once with no operands.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
         awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
           for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
-        | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0 mkdir -p
+        | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0r mkdir -p
       # Entries, "dir TAB d|f TAB name TAB size TAB mtime", from the state: what the bucket
       # holds, never upstream. Sorted, a directory's lines are contiguous with its
       # subdirectories first, so each page is written once and closed. Names are
@@ -595,11 +598,20 @@ tasks:
 
   smoke:
     desc: Read /timestamp and a sample of this run's keys back through the domain; sizes must match the listing, the tlpdb sha512 must match the verified copy, HTML must reach the client as the bucket holds it, and a Perl client must not be turned away
+    vars:
+      # The two checks below that name /timestamp ask for it only once the state says it
+      # landed. It rides the decision batch, the last one, so a seed capped at MAX_BATCHES has
+      # not reached it and the bucket answers 404 to a key it has never held; the hour it
+      # lands and every hour after name it. Empty is the only falsy value, so the path is
+      # both the flag and the key.
+      TS:
+        sh: awk -F'\t' '$1 == "timestamp" { print $1 }' {{.RUN}}/applied.txt 2>/dev/null || true
     cmds:
       # The sample is read back by its encoded URL and looked up by its raw path; a sampled
       # key is as likely as any other to carry a space.
       - >-
-        { echo timestamp; grep -h '^upload:' {{.RUN}}/publish.txt 2>/dev/null | sed 's|^upload: .* to s3://{{.BUCKET}}/||' | head -3; }
+        { {{if .TS}}echo {{.TS}};{{end}}
+        grep -h '^upload:' {{.RUN}}/publish.txt 2>/dev/null | sed 's|^upload: .* to s3://{{.BUCKET}}/||' | head -3; }
         | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
         want=$(awk -F'\t' -v k="$k" '$1 == k { print $2 }' {{.RUN}}/upstream.txt);
         got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
@@ -646,7 +658,7 @@ tasks:
       # alone, and nothing else in the run would notice it coming back. tlmgr is outside that
       # set -- TLDownload.pm sets agent => "texlive/lwp" -- but the archive's own Perl and
       # Python clients are not. CURL carries -f, so the 403 is the failure.
-      - '{{.CURL}} -A "libwww-perl/6.67" -o /dev/null {{.URL}}/timestamp && echo "timestamp: served to a libwww-perl client"'
+      - '{{if .TS}}{{.CURL}} -A "libwww-perl/6.67" -o /dev/null {{.URL}}/timestamp && echo "timestamp: served to a libwww-perl client"{{else}}echo "perl client check skipped (timestamp has not landed yet)"{{end}}'
 
   report:
     desc: Append the run summary to the Actions job page (stdout elsewhere) from the counts in RUN
@@ -663,7 +675,7 @@ tasks:
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(awk -F'\t' '{ s += $2 } END { printf "%.2f GB", s / 1e9 }' {{.RUN}}/upstream.txt) upstream, at [{{.URL}}/]({{.URL}}/) |
         |---|---|
         | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next hour" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
-        | Published to R2 | $(grep -c '^upload:' {{.RUN}}/publish.txt 2>/dev/null || true) uploaded |
+        | Published to R2 | $(awk '/^upload:/ { n++ } END { print n + 0 }' {{.RUN}}/publish.txt 2>/dev/null || echo 0) uploaded |
         | Directory pages | $(n {{.RUN}}/index-make.txt) redrawn under both keys, $(n {{.RUN}}/index-gone.txt) keys removed |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && awk -F'\t' '{ s += $2 } END { printf "%.2f GB in %d objects (reconciled)", s / 1e9, NR }' {{.RUN}}/bucket.txt || echo "not measured this run") of the {{.CEILING_GB}} GB ceiling |
