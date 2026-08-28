@@ -82,7 +82,7 @@ lists the rules the mirror wants and why.
 | Limit | Value | What the mirror asks |
 |---|---|---|
 | Job time | 6 h, counted from the actual start | `timeout-minutes: 350` |
-| Runner disk | 14 GB documented | at most one 4 GB batch plus the 6.87 GB outlier |
+| Runner disk | 14 GB documented | the 1.2 GB toolbox image, plus at most one 4 GB batch and the 6.87 GB outlier |
 | Runner RAM | 16 GB | under 300 MB |
 | Concurrent jobs | 20 on Free | 1; `concurrency: sync` queues an overlapping slot |
 | Job summary | 1 MiB per step, 20 steps | about 2 KB |

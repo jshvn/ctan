@@ -15,18 +15,21 @@ Everything is in a few files:
   `clock -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> index -> smoke -> report -> ping`,
   where `batches` runs `fetch -> verify -> publish -> checkpoint` per batch.
 - `aws.config`: single-part uploads under 4 GiB, 512 MiB multipart parts above.
-- `docker/Dockerfile`: the toolbox image with the runner's tool versions.
-  `task run -- task <args>` runs any task inside it with the repo at `/work`.
+- `docker/Dockerfile`: the toolbox image, and so the pipeline's environment. Every run
+  happens inside it, locally and in Actions alike; `task run -- task <args>` runs any task
+  in it with the repo at `/work`.
 - `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
   `seed`, `reconcile`, `max_batches`. `check.yml`: `task --dry --force sync` and
-  `task lint` on pull requests.
+  `task lint` on pull requests. Both call `task run --`, so the runner supplies nothing but
+  `task` and a Docker daemon.
 
 `README.md` is for users and is the mirror's only documentation page; the root URL serves
 CTAN's own `index.html`. Operational detail belongs here and in Taskfile comments.
 
 ## Constraints
 
-- No shell scripts. Logic lives in `Taskfile.yml`; workflows install tools and run one task.
+- No shell scripts. Logic lives in `Taskfile.yml`; workflows install `task` and run one task
+  inside the image.
 - Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `xz`, `curl`,
   `task`. Network endpoints are exactly dante, R2, the public domain and healthchecks.io.
   The zone is configured by hand; nothing here calls the Cloudflare API.

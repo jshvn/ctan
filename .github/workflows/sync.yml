@@ -34,9 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-      - run: aws --version && rsync --version | head -1 && df -h .
+      # Builds the toolbox and prints the versions the run will use. df is the host's:
+      # the image and the batches share the runner's disk, and the batch budget is that disk.
+      - run: df -h . && task run -- sh -c 'aws --version && rsync --version | head -1'
+      # The pipeline runs inside the image, so its environment is docker/Dockerfile and not
+      # whatever ubuntu-latest ships this month. go-task reports 201 for any inner failure;
+      # nonzero is all the job needs.
       - run: >-
-          task sync
+          task run -- task sync
           SEED=${{ inputs.seed == true }}
           RECONCILE=${{ inputs.reconcile == true && 'true' || 'auto' }}
           MAX_BATCHES=${{ inputs.max_batches || '4' }}

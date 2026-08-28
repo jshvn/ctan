@@ -51,9 +51,9 @@ vars:
   ANCESTORS: |-
     awk -F'\t' '!("" in s) { s[""] = 1; print "" }
       { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }'
-  # Local runs happen inside the image built from docker/: Apple `container` when installed
-  # and running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
-  # image ships the runner's tool versions so the two agree.
+  # Every run happens inside the image built from docker/, locally and in Actions alike, so
+  # the environment is docker/Dockerfile and not the host's: Apple `container` when installed
+  # and running, else Docker; ENGINE=docker forces Docker.
   IMAGE: ctan-sync
   ENGINE:
     sh: |
