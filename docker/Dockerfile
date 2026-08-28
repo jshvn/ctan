@@ -1,6 +1,6 @@
-# The pipeline's toolbox: the same versions GitHub's ubuntu-latest runner ships (rsync
-# 3.2.7, gnupg 2.4.4, xz 5.4.5, curl 8.5.0), so a run here and a run in Actions differ
-# only in wall clock. Base pinned by digest; the tag is informational.
+# The pipeline's toolbox, and so the pipeline's environment: every run happens in here,
+# locally and in GitHub Actions alike, and this file is the only thing that decides which
+# rsync, gnupg, xz and curl a run gets. Base pinned by digest; the tag is informational.
 # pinned: 2026-08-26 -- refresh by re-running `container image pull ubuntu:24.04` and
 # copying the first digest `container image inspect ubuntu:24.04` prints.
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517

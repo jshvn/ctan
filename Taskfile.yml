@@ -51,9 +51,9 @@ vars:
   ANCESTORS: |-
     awk -F'\t' '!("" in s) { s[""] = 1; print "" }
       { n = split($1, c, "/"); d = ""; for (i = 1; i < n; i++) { d = d c[i] "/"; if (!(d in s)) { s[d] = 1; print d } } }'
-  # Local runs happen inside the image built from docker/: Apple `container` when installed
-  # and running, else Docker; ENGINE=docker forces Docker. GitHub Actions runs natively; the
-  # image ships the runner's tool versions so the two agree.
+  # Every run happens inside the image built from docker/, locally and in Actions alike, so
+  # the environment is docker/Dockerfile and not the host's: Apple `container` when installed
+  # and running, else Docker; ENGINE=docker forces Docker.
   IMAGE: ctan-sync
   ENGINE:
     sh: |
@@ -65,9 +65,15 @@ vars:
       fi
   # Credentials pass by name from the host environment (an unset one arrives empty);
   # nothing is written to disk. HOME=/tmp gives the AWS CLI somewhere to keep its cache.
+  # -t is what makes task colour its output, and only a terminal on both ends can have it:
+  # the engines refuse -i -t without one. report appends to GITHUB_STEP_SUMMARY, a host
+  # path, so the file is mounted at the very path its value names.
   RUNNER: >-
-    {{.ENGINE}} run --rm -i --user $(id -u):$(id -g) -w /work -v "{{.ROOT_DIR}}":/work
-    -e HOME=/tmp -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_ENDPOINT_URL -e AWS_REGION
+    {{.ENGINE}} run --rm -i $(test -t 0 && test -t 1 && echo -t || true)
+    --user $(id -u):$(id -g) -w /work -v "{{.ROOT_DIR}}":/work
+    ${GITHUB_STEP_SUMMARY:+-v "$GITHUB_STEP_SUMMARY":"$GITHUB_STEP_SUMMARY"}
+    -e HOME=/tmp -e GITHUB_STEP_SUMMARY -e GITHUB_EVENT_NAME
+    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_ENDPOINT_URL -e AWS_REGION
     -e HEALTHCHECK_URL {{.IMAGE}}
 
 env:
