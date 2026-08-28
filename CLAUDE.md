@@ -63,7 +63,8 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   symlinks `foo.tar.xz` to it; `tlmgr` asks for the stable name, and `fetch` uses `-L`, so
   the mirror holds both, as every other CTAN mirror does. `verify` checksums both against
   the signed tlpdb, deriving the revision-stamped name from the stanza's `revision`, and
-  refuses a batch carrying an `archive/` path the tlpdb does not describe.
+  refuses a batch carrying an `archive/` path the tlpdb does not describe. A batch
+  carrying no container skips that check whole: nothing to refuse, and no `RUN/tl`.
 - **A missing state file fails the run** unless `SEED=true` (empty bucket) or
   `RECONCILE=true` (rebuild it from a bucket listing joined to upstream on size). Treating a
   missing state as empty would re-upload 140 GB.
@@ -137,8 +138,13 @@ dante listing and a signed `tlpkg/` tree.
   `obsolete/support/TeXshell/` and `texshell/`, which a macOS disk merges into one entry
   holding one of the two pages. Expect a full render there to come out one page short under
   each key. The runner is ext4 and draws both.
-- `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
-  `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
+- `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/ RSYNC='rsync
+  --timeout=300 --no-h'` and `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree`
+  for the signed checks. `run-tl`'s batch is `b1.txt`; `run-tl-bad`'s is `changed.txt`.
+- `task run -- task verify B=/work/fixtures/run-notl/b1.txt RUN=/work/fixtures/run-notl
+  STAGING=/work/fixtures/empty` -- a batch with no tlnet path and no `RUN/tl`, the hour that
+  skips `tlpdb`. It must exit 0. `run-belt` is the same with an `archive/` path the tlpdb
+  does not name; it must not.
 - `task run -- task smoke RUN=<dir> STAGING=<dir> URL=file:///work/<dir>`; `task retry
   CMD='exit 5' RETRY_BASE=0`. `STAGING` is what sizes the page the fixture serves, so the
   page check runs rather than being skipped; over `file://` only the INDEX key is read,
@@ -160,6 +166,11 @@ Seven hazards, each of which has cost an evening:
   fixture tests. Override the whole var: `RSYNC='rsync --timeout=300 --no-h'`.
 - **`tlpdb`'s status gate reads all of `changed.txt`**, not the batch, so it runs on
   essentially every real run. Only `verify`'s decision-batch branch keys on the batch.
+  "Essentially" is the trap: an hour whose delta touches no `systems/texlive/tlnet/` path at
+  all skips `tlpdb`, and then `RUN/tl` does not exist. Anything in `verify` that reads or
+  writes under `RUN/tl` must be guarded on the batch carrying a tlnet path, or it dies on a
+  redirect into a directory nobody made -- rare enough to pass every fixture and every CI
+  run and still break a live hour.
 - **Only what `RUNNER` names crosses into the container.** `report` reads
   `GITHUB_STEP_SUMMARY`, whose value is a path on the runner, so the variable is passed *and*
   the file bind-mounted at that same path; `GITHUB_EVENT_NAME` rides along, without which
