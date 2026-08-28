@@ -594,7 +594,7 @@ tasks:
       - {task: delete, vars: {D: '{{.RUN}}/orphans.txt'}}
 
   smoke:
-    desc: Read /timestamp and a sample of this run's keys back through the domain; sizes must match the listing, the tlpdb sha512 must match the verified copy
+    desc: Read /timestamp and a sample of this run's keys back through the domain; sizes must match the listing, the tlpdb sha512 must match the verified copy, HTML must reach the client as the bucket holds it, and a Perl client must not be turned away
     cmds:
       # The sample is read back by its encoded URL and looked up by its raw path; a sampled
       # key is as likely as any other to carry a space.
@@ -626,6 +626,27 @@ tasks:
         | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
         got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
         echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done; }
+      # Cloudflare's HTML rewriters sit between R2 and the client, so what finds them is the
+      # object compared with what the domain serves. A size check is not enough: measured
+      # 2026-08-28, Automatic HTTPS Rewrites lengthened a link by a byte while the parser it
+      # runs in collapsed a newline inside the same tag, leaving the length unchanged and the
+      # bytes different. This path carries 8 plain http:// links and 3 mailto: addresses, so
+      # HTTPS Rewrites, Email Obfuscation and Rocket Loader each alter it. Skipped over
+      # file://, which has no bucket to read, and whenever the path is not in the state.
+      - >-
+        h=biblio/bibtex/contrib/german/dinat/dinat-index.html;
+        n=$(awk -F'\t' -v k="$h" '$1 == k { print $2 }' {{.RUN}}/applied.txt);
+        case "{{.URL}}" in http*) ;; *) n= ;; esac;
+        if test -z "$n"; then echo "html canary skipped ($h is not in the state, or the URL is not http)"; else
+        aws s3 cp {{.AWS_FLAGS}} {{.S3}}/$h {{.RUN}}/canary.html &&
+        {{.CURL}} {{.URL}}/$h | cmp - {{.RUN}}/canary.html &&
+        echo "$h: $n bytes, the edge serves what the bucket holds"; fi
+      # Browser Integrity Check answers 403 to libwww-perl, LWP, Python-urllib and PycURL,
+      # which every other CTAN mirror serves; a zone rule turns it off for this hostname
+      # alone, and nothing else in the run would notice it coming back. tlmgr is outside that
+      # set -- TLDownload.pm sets agent => "texlive/lwp" -- but the archive's own Perl and
+      # Python clients are not. CURL carries -f, so the 403 is the failure.
+      - '{{.CURL}} -A "libwww-perl/6.67" -o /dev/null {{.URL}}/timestamp && echo "timestamp: served to a libwww-perl client"'
 
   report:
     desc: Append the run summary to the Actions job page (stdout elsewhere) from the counts in RUN

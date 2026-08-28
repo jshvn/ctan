@@ -317,7 +317,7 @@ and an unscoped path match reaches all of it.
 
 | Where | Rule | Expression | What to set |
 |---|---|---|---|
-| Configuration Rules | HTML rewriters off | `(http.host eq "ctan.ijosh.com")` | Email Obfuscation off, Rocket Loader off |
+| Configuration Rules | rewriters and the UA filter off | `(http.host eq "ctan.ijosh.com")` | Email Obfuscation off, Rocket Loader off, Automatic HTTPS Rewrites off, Browser Integrity Check off |
 | Cache Rules | cache off | `(http.host eq "ctan.ijosh.com")` | Cache eligibility: bypass cache |
 | Transform Rules | `/` serves CTAN's `index.html` | `(http.host eq "ctan.ijosh.com" and http.request.uri.path eq "/")` | Rewrite path to `/index.html` |
 | Transform Rules | directory URLs serve the mirror's page | `(http.host eq "ctan.ijosh.com" and ends_with(http.request.uri.path, "/") and http.request.uri.path ne "/")` | Rewrite path, dynamic: `concat(http.request.uri.path, "ctan.ijosh.com.directory.index.html")` |
@@ -327,6 +327,28 @@ and an unscoped path match reaches all of it.
 changes the length. Measured 2026-08-27, a 4,006 byte Catalogue entry was served as 4,216
 until the rule went on. About 7,300 files in the tree are HTML, and a mirror that alters
 them is not a mirror. Rocket Loader is the same hazard through a second switch.
+
+**Automatic HTTPS Rewrites is a third, and it hides from a size check.** On by default, it
+rewrites plain `http://` links in HTML to `https://`. Measured 2026-08-28, about 5% of the
+tree's 7,229 HTML files came off the domain with bytes the bucket does not hold — roughly
+360 files, `+1` byte per rewritten link. On
+`biblio/bibtex/contrib/german/dinat/dinat-index.html` the length did not move at all: the
+rewriter lengthened one link by a byte and the HTML parser it runs inside collapsed a
+newline within the same tag, so the file measured 7,688 bytes either way and differed at
+byte 7,150. That is why `smoke`'s canary compares the object with the response rather than
+their lengths, and why the sampled-key size checks alone were never going to find this.
+
+**Browser Integrity Check is the fourth, and it refuses rather than rewrites.** On by
+default, it answers `403` (Cloudflare error 1010) to any client whose User-Agent matches
+`LWP`, `libwww-perl`, `Python-urllib` or `PycURL`. Measured 2026-08-28 against `ftp.fau.de/ctan`
+and `ctan.math.illinois.edu`, which serve all four `200`: no other mirror surveyed rejects
+them, so leaving it on makes this the one place the mirror is less capable than the archive
+it copies. Browsers, curl, wget, Go, Java and `requests` are unaffected, which is why every
+casual check passes. `tlmgr` is unaffected too — TeX Live's `TLDownload.pm` sets
+`agent => "texlive/lwp"` explicitly, and its downloader order is `lwp curl wget`, so the
+first thing it tries carries a string the filter allows. Verified off for the mirror's
+hostname alone on 2026-08-28: `ijosh.com` and `www.ijosh.com` still answer `403` to
+`libwww-perl`.
 
 Cloudflare drops `content-length` from `text/html` responses whether or not those features
 are on, which is why `smoke` sizes an object from a one-byte ranged read rather than a HEAD.
