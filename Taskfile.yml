@@ -363,8 +363,6 @@ tasks:
     requires: {vars: [B]}   # public so it can be run by hand against a canned batch (section 8)
     dir: '{{.STAGING}}'
     cmds:
-      # Belt to list's braces: no versioned tlnet container may reach the bucket.
-      - test "$(cut -f1 {{.B}} | grep -c '^{{.TL}}/archive/.*\.r[0-9]*\.tar\.xz$')" = 0
       # Every signed sha512 in this batch (root installers and updaters, the tlpdb) checks
       # against the keyring already pinned by tlpdb. The while loop's status is the pipeline's.
       - >-
@@ -373,15 +371,24 @@ tasks:
         gpgv --status-fd 1 --keyring {{.RUN}}/tl/tlpkg/gpg/pubring.gpg "$f.asc" "$f"
         | awk '/^\[GNUPG:\] GOODSIG /{g=1} /^\[GNUPG:\] VALIDSIG .* {{.TL_KEY}}$/{v=1} END{exit !(g&&v)}')
         || exit 1; done
-      # Every tlnet container in this batch must match the checksum the verified tlpdb gives it.
+      # Every tlnet container in this batch must match the checksum the verified tlpdb gives
+      # it, under both the names upstream carries: the stable one the tlpdb names and the
+      # revision-stamped one it describes, the same bytes and so the same checksum. The END
+      # clause is the belt: a container the tlpdb says nothing about cannot pass. Written to
+      # a file rather than piped, so awk's status is its own; verify runs without pipefail
+      # because the grep above legitimately matches nothing.
       - >-
-        if test "$(grep -c '^{{.TL}}/archive/' {{.B}})" != 0; then
-        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { want[$1] = 1; next }
-          /^name /{split($0, a, " "); n = a[2]}
-          /^containerchecksum /{split($0, a, " "); p = TL "/archive/" n ".tar.xz"; if (p in want) print a[2] "  " p}
-          /^doccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".doc.tar.xz"; if (p in want) print a[2] "  " p}
-          /^srccontainerchecksum /{split($0, a, " "); p = TL "/archive/" n ".source.tar.xz"; if (p in want) print a[2] "  " p}' \
-        {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb | shasum -a 512 -c --quiet; fi
+        awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
+          /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
+          /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
+          /^doccontainerchecksum /{split($0, a, " "); emit(a[2], n ".doc")}
+          /^srccontainerchecksum /{split($0, a, " "); emit(a[2], n ".source")}
+          function emit(sum, base,   p, q) { p = TL "/archive/" base ".tar.xz"; q = TL "/archive/" base ".r" r ".tar.xz"
+            if (p in want) { print sum "  " p; delete want[p] }
+            if (q in want) { print sum "  " q; delete want[q] } }
+          END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }' \
+        {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt
+      - test ! -s {{.RUN}}/tl/sums.txt || shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt
       # The decision batch. The tlpdb it carries must be the one verified at the start of
       # the run, the .xz tlmgr downloads must decompress to it byte for byte, and every
       # container it names must be in the bucket after this run: the state, plus this
