@@ -338,9 +338,9 @@ newline within the same tag, so the file measured 7,688 bytes either way and dif
 byte 7,150. That is why `smoke`'s canary compares the object with the response rather than
 their lengths, and why the sampled-key size checks alone were never going to find this.
 
-**Browser Integrity Check is the third switch, and it fails silently.** On by default, it
-answers `403` (Cloudflare error 1010) to any client whose User-Agent matches `LWP`,
-`libwww-perl`, `Python-urllib` or `PycURL`. Measured 2026-08-28 against `ftp.fau.de/ctan`
+**Browser Integrity Check is the fourth, and it refuses rather than rewrites.** On by
+default, it answers `403` (Cloudflare error 1010) to any client whose User-Agent matches
+`LWP`, `libwww-perl`, `Python-urllib` or `PycURL`. Measured 2026-08-28 against `ftp.fau.de/ctan`
 and `ctan.math.illinois.edu`, which serve all four `200`: no other mirror surveyed rejects
 them, so leaving it on makes this the one place the mirror is less capable than the archive
 it copies. Browsers, curl, wget, Go, Java and `requests` are unaffected, which is why every
