@@ -38,7 +38,9 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
 - Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
   prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
   `<HOST>.directory.index.html` is the one reserved file name: the page `index` draws in every
-  directory, a name no upstream path can carry.
+  directory, a name no upstream path can carry. Every directory also holds that page under a
+  second key, the directory without its trailing slash, which no upstream path can carry
+  either: upstream is a filesystem, where a name is a directory or a file and never both.
 - Secrets are exactly five: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
   `AWS_REGION`, `HEALTHCHECK_URL`; the workflow passes each to the Taskfile by name. The four
   `AWS_*` are the whole requirement; without `HEALTHCHECK_URL`, `ping` is skipped.
@@ -93,9 +95,21 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   `applied.txt` (what the bucket holds), and `.state/indexed.txt.xz` records the state the
   pages last showed, so a run that dies before advancing it redraws the same pages next
   hour. No page enters the state (`merge` joins staging against the batch) and `reconcile`
-  never counts one as an orphan. A missing `indexed` redraws all 27k once. The zone's
-  second transform rule serves `/dir/` from that key; without it the pages exist and
+  never counts one as an orphan. A missing `indexed` redraws all 27k once, which is also the
+  only way a change to the page's markup reaches pages whose directory has not changed. The
+  zone's second transform rule serves `/dir/` from that key; without it the pages exist and
   nothing else changes.
+- **Every page is written under both of its keys, and only one of them names itself.**
+  `<dir>/<HOST>.directory.index.html` serves `/dir/`; `<dir>` serves `/dir`, where every
+  other mirror answers 301 and no Cloudflare rule can, because 13,259 upstream files carry
+  no extension and 212 directories carry a dot, so nothing in the URL says which is which.
+  Three things hang off this and each has a reason: the page carries a `<base href>`, or a
+  relative link on `/dir` resolves against the parent; the slashless copies stage one tree
+  per depth under `SLASH`, because no filesystem holds both `a/b` and `a/b/`; and their
+  upload gives `--content-type text/html`, because a key with no suffix would otherwise go
+  up as `binary/octet-stream` and download rather than draw. `reconcile` cannot spare the
+  second key by name, so it spares every bare directory of the state. `docs/reference.md`
+  section 7 has the measurements.
 - **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
 - **A failed run is the only alert.** The check is cron `42 * * * *` UTC with a 3 h grace,
   which absorbs one dropped slot plus a late full run; healthchecks.io emails when the grace
@@ -118,9 +132,11 @@ dante listing and a signed `tlpkg/` tree.
   `upstream.txt`, `applied.txt`, `changed.txt`.
 - `task run -- task merge B=<batch> RUN=<dir> STAGING=<dir>` for the state arithmetic.
 - `task run -- task render RUN=<dir> STAGING=<dir>` from canned `applied.txt` and
-  `indexed.txt`; run it on a real listing only inside the image, because CTAN has
-  `obsolete/support/TeXshell/` and `texshell/` and a case-insensitive disk merges their
-  pages.
+  `indexed.txt`. The image bind-mounts the repo, so a real listing renders onto the host's
+  filesystem and the host's case sensitivity is what counts: CTAN has
+  `obsolete/support/TeXshell/` and `texshell/`, which a macOS disk merges into one entry
+  holding one of the two pages. Expect a full render there to come out one page short under
+  each key. The runner is ext4 and draws both.
 - `task run -- task tlpdb RUN=<dir> SOURCE=/work/fixtures/tree/` and
   `task verify B=<batch> RUN=<dir> STAGING=/work/fixtures/tree` for the signed checks.
 - `task run -- task smoke RUN=<dir> URL=file:///work/<dir>`; `task retry CMD='exit 5' RETRY_BASE=0`.

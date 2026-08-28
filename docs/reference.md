@@ -22,6 +22,7 @@ Measured 2026-08-26 from a dereferenced dante listing (538,289 lines, 6.9 s wall
 | Longest key | 151 bytes |
 | Distinct directories holding a file directly | 24,953 (24,952 plus the root) |
 | Distinct directories, every one incl. file-less | 27,262: adds 2,309 that hold only subdirectories — what `render` draws a page for (2026-08-27) |
+| Directory-page objects | 54,523: every directory's page under both keys, all but the root's, which has no slashless key |
 | Churn, last 30 days | 16,574 files, 4.72 GB; 23.0 files per hour on average |
 | Hour-slots with any change, last 30 days | 284 of 720 |
 | Hour-slots over 1,000 files, last 30 days | 3 |
@@ -149,9 +150,9 @@ one million — so any Class A overage at all costs $4.50.
 
 | Item | Value |
 |---|---|
-| Storage today | 139.7 GB-month (0.07 of it directory pages), minus 10 free, 129.7 × $0.015 = **$1.95/month** |
+| Storage today | 139.8 GB-month (0.14 of it directory pages, each stored twice), minus 10 free, 129.8 × $0.015 = **$1.95/month** |
 | At the 200 GB ceiling | 190 billable = $2.85/month |
-| Class A per month | 30 reconcile listings + 1,440 state writes + churn + a few thousand directory pages ≈ 36k → $0; drawing every page once is 27k |
+| Class A per month | 30 reconcile listings + 1,440 state writes + churn + a few thousand directory pages ≈ 45k → $0; drawing every page once is 54.5k |
 | Class B per month | 720 state reads + about 5,760 `smoke` reads ≈ 6.5k → $0 |
 | One uncached `scheme-full` install | 11,919 GETs, 5.51 GB; free until 27 installs a day |
 | Budget | $5/month; `plan` refuses a tree over `CEILING_GB` (200) before anything uploads |
@@ -255,8 +256,10 @@ re-fetches it. Editing the state by hand to get it back sooner is not worth the 
 aws s3 rm s3://ctan/.state/indexed.txt.xz
 ```
 
-The next run finds no record of what the pages show and draws all 27k, about ten minutes
-and 27k Class A. Safe; the bucket's files are untouched.
+The next run finds no record of what the pages show and draws all 27k directories under
+both keys, about twenty minutes and 54.5k Class A. Safe; the bucket's files are untouched.
+This is also how a change to the page's own markup reaches the pages already in the bucket,
+which are otherwise redrawn only when their directory changes.
 
 **A directory URL is a 404.** The page is at its key regardless of the zone:
 `curl -sI https://ctan.ijosh.com/systems/knuth/ctan.ijosh.com.directory.index.html`. If that
@@ -373,3 +376,40 @@ rewritten to it here and no other directory URL is.
 pages link downloads through `mirrors.ctan.org`, which hands the visitor a randomly chosen
 mirror — so a directory URL sent there would cost every download that follows, not only the
 listing.
+
+**A directory URL without its trailing slash needs a second key, because no rule can
+answer it.** Every other mirror 301s `/systems/knuth` to `/systems/knuth/`; Apache can,
+because it knows which names are directories. Measured 2026-08-28, `ftp.fau.de`,
+`mirrors.mit.edu`, `ctan.math.illinois.edu` and `mirror.las.iastate.edu` all redirect, and
+`mirrors.ctan.org` passes a slashless path straight through to whichever mirror it picks, so
+a visitor it sends here would land on a 404. Cloudflare's rules run before the origin and
+see only the URL, and the URL does not say which of these is a directory:
+
+    /systems/knuth                                 a directory
+    /biblio/biber/base/documentation/Changes       a file
+
+**13,259 upstream files carry no extension** (`README`, `Makefile`, `configure`, `VERSION`,
+`Changes`), so a rule appending a slash to every extensionless path would 404 all of them —
+worse than the 27,262 it fixed. The mirror image of the heuristic fails too: **212
+directories have a dot in their own name** (`biblio/bibtex/utils/bibview-2.0/`,
+`documentation/german/stammtisch/wuppertal/stybesch/pk/300/mag____0.790/`). A Worker could
+retry the 404 with a slash, but it would sit in front of every request to the mirror, and
+Workers Paid at $5/month is more than the whole bucket costs.
+
+So `render` writes each page under both keys, `<dir>/INDEX` and `<dir>`, and the slashless
+one answers with the listing rather than a redirect. A key can hold a page or a CTAN file
+and never both, because upstream is a filesystem, where a name is a directory or a file.
+Three consequences worth keeping in mind:
+
+- **The page carries a `<base href>`.** A relative href on `/systems/knuth` would otherwise
+  resolve against `/systems/`. The base makes one document correct under both URLs.
+- **The slashless copies stage one tree per depth.** No filesystem holds both `a/b` and
+  `a/b/`, which is the same fact that makes the two keys collision-free upstream. Within
+  `SLASH/<depth>/` every page is a file with the same number of components, so no page is
+  another's parent and each tree uploads whole. Max depth in the tree is 14.
+- **The slashless key needs its content type given.** It has no suffix, so the CLI would
+  send `binary/octet-stream` and a browser would download the page instead of drawing it.
+
+`reconcile` cannot recognise the second key by name the way it recognises the first, so it
+spares every bare directory of the state. A path that stops being a directory upstream
+leaves that set and is judged as an ordinary file again.
