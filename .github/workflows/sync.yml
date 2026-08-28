@@ -41,7 +41,7 @@ jobs:
       # whatever ubuntu-latest ships this month. go-task reports 201 for any inner failure;
       # nonzero is all the job needs.
       - run: >-
-          task run -- task sync
+          task run -- task --color sync
           SEED=${{ inputs.seed == true }}
           RECONCILE=${{ inputs.reconcile == true && 'true' || 'auto' }}
           MAX_BATCHES=${{ inputs.max_batches || '4' }}
