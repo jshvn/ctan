@@ -88,8 +88,7 @@ lists the rules the mirror wants and why.
 | Runner RAM | 16 GB | under 300 MB |
 | Concurrent jobs | 20 on Free | 1; `concurrency: sync` queues an overlapping slot |
 | Job summary | 1 MiB per step, 20 steps | about 2 KB |
-| Cron lateness | starts 15 to 45 min after the slot; slots can be dropped | absorbed by the healthchecks grace |
-| Schedule disablement | 60 days without repository activity | a failed healthcheck ping catches it |
+| Dispatch queueing | one pending run per `concurrency` group; the rest are dropped | a dispatch arriving during a run waits, and the next hour's delta subsumes any it displaced |
 
 Log volume is undocumented and lines are silently dropped, which is why `report` counts from
 `RUN/` and never from the log.
@@ -171,18 +170,23 @@ only alert.
 
 | Setting | Value |
 |---|---|
-| Schedule | cron `42 * * * *`, timezone UTC |
+| Schedule | cron `42 * * * *`, timezone UTC, the minute the dispatcher fires |
 | Grace | 3 h |
 | Pinged by | `ping`, the last task in `sync` |
 
-The grace covers one dropped slot: the run at the next slot starts up to 45 minutes late and
-takes up to about 75 minutes for a full `MAX_BATCHES` delta, so a ping expected at a given
-slot may legitimately arrive 160 minutes after it. Three hours leaves margin for curl's
-retries. A genuine stall alerts between 3 h and 4 h 40 min after the last success, which
-keeps the mirror inside mirmon's 28-hour band with room to spare.
+The grace covers a queued run: a dispatch that arrives while a run is going waits for it
+(`concurrency`, one pending run per group), and a full `MAX_BATCHES` delta takes up to about
+75 minutes, so a ping expected at a given slot may legitimately arrive a good deal after it.
+Three hours leaves margin for curl's retries. A genuine stall alerts between 3 h and 4 h 40
+min after the last success, which keeps the mirror inside mirmon's 28-hour band with room to
+spare.
 
 Cron rather than a simple period: a period check resets its window from the last ping, so
 sustained lateness drifts the schedule silently. Cron anchors the expectation to the slot.
+
+Nothing in this repo starts a run, so this check is also the only thing watching the
+dispatcher: a scheduler that stops firing looks exactly like a pipeline that stopped
+finishing, and both are caught by the same missing ping.
 
 Nothing sends `/start`, so the grace does not cap run duration. Before a seed or a large
 backlog dispatch, pause the check in the UI — a multi-hour run would otherwise blow the
@@ -289,21 +293,22 @@ Free and safe; R2 does it itself after 7 days.
 **dante moved.** Edit `SOURCE` in `Taskfile.yml`, open a PR, merge. Until then every run
 spends ten minutes retrying exit 5 and fails, which is the correct loud behaviour.
 
-**The schedule stopped.** Actions tab, the workflow, "Enable workflow"; then any commit so
-the 60-day clock restarts. healthchecks recovers on the next ping.
-
-**The run did not start.**
+**The run did not start.** `sync.yml` has one trigger, `workflow_dispatch`, and
+[`jshvn/dispatch`](https://github.com/jshvn/dispatch) is what calls it: a Cloudflare Workflow
+whose cron `42 * * * *` names this repo's `sync.yml` as a target and POSTs the dispatch with
+a GitHub App token.
 
 ```sh
-gh run list --workflow sync.yml --limit 3       # createdAt against the cron slot
-gh workflow view sync.yml                       # "disabled" means the 60-day rule or a manual stop
+gh run list --workflow sync.yml --limit 3       # createdAt against :42
+gh workflow view sync.yml                       # "disabled" means a manual stop
 ```
 
-Under an hour past the slot is normal; one dropped slot is normal. Two consecutive slots
-with no run: check GitHub's status page for an Actions incident, re-enable the workflow if
-it is disabled, otherwise dispatch by hand. A hand dispatch is the same run the cron would
-have started. Do not add an external trigger to compensate — the hour's work is not lost,
-only late.
+A run held behind a longer one is normal, and so is a single missing hour — the next
+dispatch fetches that hour's delta too. Two consecutive hours with no run: read the
+dispatcher's Worker logs, check GitHub's status page for an Actions incident, confirm the
+App is still installed here with `actions: write`, and dispatch by hand meanwhile. A hand
+dispatch is the same run the dispatcher would have started, and no work is lost by waiting —
+only delayed.
 
 ## 6. Zone configuration
 

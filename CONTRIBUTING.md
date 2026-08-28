@@ -24,14 +24,13 @@ Pull requests are welcome, especially ones that make the pipeline smaller.
 
 ```sh
 task run -- task --dry --force sync                 # render every command, no network
-task run -- task lint                               # the cron minute agrees with CRON_MINUTE
 task run -- task smoke RUN=<dir> URL=file:///work/<dir>   # read-back check, offline
 ```
 
 `task run` builds the image on first use and mounts the repo at `/work`, which is why the
 paths above are the container's.
 
-The `check` workflow runs the first two on every pull request. `CLAUDE.md` lists the rest of
+The `check` workflow runs the first on every pull request. `CLAUDE.md` lists the rest of
 the offline checks; they read a `fixtures/` tree (git-excluded) you supply yourself: a real
 dante listing and a signed `tlpkg/`.
 

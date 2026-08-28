@@ -23,7 +23,6 @@ vars:
   SLASH: '{{.RUN}}/slash'
   TL: systems/texlive/tlnet                     # the one signed subtree
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC   # tug.org/texlive/verify.html
-  CRON_MINUTE: 42                               # the minute in sync.yml's cron; lint checks they agree
   CEILING_GB: 200                               # refuse to run past this many decimal GB upstream
   BATCH_GB: 4                                   # decimal GB per batch; a file over it is a batch by itself
   MAX_BATCHES: '{{.MAX_BATCHES | default "4"}}' # batches per run; the rest wait for the next hour
@@ -77,7 +76,7 @@ vars:
     {{.ENGINE}} run --rm -i $(test -t 0 && test -t 1 && echo -t || true)
     --user $(id -u):$(id -g) -w /work -v "{{.ROOT_DIR}}":/work
     ${GITHUB_STEP_SUMMARY:+-v "$GITHUB_STEP_SUMMARY":"$GITHUB_STEP_SUMMARY"}
-    -e HOME=/tmp -e GITHUB_STEP_SUMMARY -e GITHUB_EVENT_NAME
+    -e HOME=/tmp -e GITHUB_STEP_SUMMARY
     -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_ENDPOINT_URL -e AWS_REGION
     -e HEALTHCHECK_URL {{.IMAGE}}
 
@@ -109,11 +108,9 @@ tasks:
           "                    ${d}vars: BUCKET=<scratch> runs it for real without touching {{.BUCKET}}${r}" \
           "  task seed         First fill of an empty bucket: sync with SEED=true and no batch limit" \
           "                    ${d}one long run instead of MAX_BATCHES=4 an hour; repeat it to resume a cut-off seed${r}" \
-          "  task lint         The cron minute in sync.yml agrees with CRON_MINUTE" \
           "" \
           "${c}offline checks -- no network, no credentials, every one inside the image${r}" \
           "  task --dry --force sync                                  render every command, run none" \
-          "  task run -- task lint" \
           "  task run -- task normalise RUN=/work/fixtures/run        listing.txt -> upstream.txt" \
           "  task run -- task diff RUN=<dir>                          canned upstream/applied -> changed/deleted" \
           "  task run -- task plan RUN=<dir> STAGING=<dir>            changed.txt -> batch-NNNN.txt" \
@@ -181,25 +178,17 @@ tasks:
       - SEED=true MAX_BATCHES=999999 task sync
 
   clock:
-    desc: Record the run's start (RUN/start.txt) and its lateness against the cron slot (RUN/late.txt)
+    desc: Record the run's start as "epoch UTC-hour" (RUN/start.txt)
     cmds:
       - mkdir -p {{.RUN}}
       # publish.txt is appended across batches within a run, and orphans.txt
       # is written only by reconcile; a reused workspace must start each run with them gone,
       # or smoke and report count old lines.
       - rm -f {{.RUN}}/publish.txt {{.RUN}}/orphans.txt
-      - date -u +%s > {{.RUN}}/start.txt
-      # Seconds since the last :CRON_MINUTE, and the hour that slot belongs to. Arithmetic on
-      # the epoch only, so it is the same on macOS and Linux. Scheduled runs start 15 to 45
-      # minutes after their slot; a run over an hour late reads as the next slot's.
-      - >-
-        awk -v m={{.CRON_MINUTE}} '{ late = ((int($1 / 60) % 60 - m + 60) % 60) * 60 + $1 % 60;
-          printf "%d %d\n", late, int(($1 - late) / 3600) % 24 }' {{.RUN}}/start.txt > {{.RUN}}/late.txt
-
-  lint:
-    desc: The cron minute in sync.yml matches CRON_MINUTE
-    cmds:
-      - 'test "$(sed -n "s/.*cron: ''\([0-9]*\) \* \* \* \*''.*/\1/p" .github/workflows/sync.yml)" = "{{.CRON_MINUTE}}"'
+      # The epoch is what report prints the start time from; the hour beside it is what
+      # reconcile keys on, taken here rather than there because reconcile runs late in the
+      # pipeline and a long run would have crossed into the next hour by then.
+      - date -u +'%s %H' > {{.RUN}}/start.txt
 
   list:
     desc: List dante and normalise it to RUN/upstream.txt as "path TAB size TAB mtime", byte-sorted
@@ -577,8 +566,11 @@ tasks:
 
   reconcile:
     desc: Rebuild the state from a bucket listing, then delete keys that neither upstream nor .state/ owns
+    # auto is the run that started in hour 03 UTC, one a day. A run held in the dispatch
+    # queue behind a long one can start in 04 and skip the day; the next day's run does it,
+    # and RECONCILE=true asks for it by hand.
     status:
-      - 'test "{{.RECONCILE}}" = false || { test "{{.RECONCILE}}" = auto && test "$(cut -d" " -f2 {{.RUN}}/late.txt)" != 3; }'
+      - 'test "{{.RECONCILE}}" = false || { test "{{.RECONCILE}}" = auto && test "$(cut -d" " -f2 {{.RUN}}/start.txt)" != 03; }'
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
@@ -669,8 +661,7 @@ tasks:
         cat >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<EOF
         ## Sync succeeded, $(date -u '+%Y-%m-%d %H:%M UTC')
 
-        $(paste {{.RUN}}/start.txt {{.RUN}}/late.txt | awk -v m={{.CRON_MINUTE}} -v ev="${GITHUB_EVENT_NAME:-local}" '{ printf "Started %02d:%02d UTC", int($1 / 3600) % 24, int($1 / 60) % 60 }
-          ev == "schedule" { printf ", %d min after the :%02d slot", $2 / 60, m } END { print "." }')
+        $(awk '{ printf "Started %02d:%02d UTC.\n", int($1 / 3600) % 24, int($1 / 60) % 60 }' {{.RUN}}/start.txt)
 
         | Mirror | $(n {{.RUN}}/upstream.txt) objects, $(awk -F'\t' '{ s += $2 } END { printf "%.2f GB", s / 1e9 }' {{.RUN}}/upstream.txt) upstream, at [{{.URL}}/]({{.URL}}/) |
         |---|---|

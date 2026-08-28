@@ -1,7 +1,5 @@
 name: sync
 on:
-  schedule:
-    - cron: '42 * * * *'   # hourly at a fixed minute; runs start 15 to 45 minutes after it
   workflow_dispatch:
     inputs:
       seed:

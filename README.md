@@ -63,6 +63,12 @@ nothing for bandwidth, so traffic doesn't move the bill.
 4. Actions -> sync -> Run workflow, with `seed` checked and `max_batches` at 40. The first
    run uploads everything (about 140 GB, a few hours); every run after it pushes the hourly
    delta. Storage past R2's free 10 GB costs about $1.95 a month.
+5. Give it something to start it hourly. `sync.yml` has one trigger, `workflow_dispatch`, so
+   a fork runs only when something asks it to: add a `schedule:` block to the workflow for
+   the zero-setup option, or point a scheduler at the dispatch API, which is what this mirror
+   does — GitHub's own cron delivered 3 of 51 hourly slots here, so
+   [`jshvn/dispatch`](https://github.com/jshvn/dispatch) fires it from a Cloudflare Workflow
+   instead.
 
 | Secret | What it is |
 | --- | --- |
@@ -79,9 +85,9 @@ nothing for bandwidth, so traffic doesn't move the bill.
 
 **Alerting.** `HEALTHCHECK_URL` is the only alert the mirror has: a failed or missing run
 stops the ping, and healthchecks.io mails you when the grace passes. Point a check at cron
-`42 * * * *` UTC with a 3 hour grace, which absorbs one dropped slot and a late full run.
-Unset, a run that stops arriving tells nobody. Pause the check before a seed — a multi-hour
-run outlasts any sensible grace.
+`42 * * * *` UTC with a 3 hour grace, which absorbs a queued run and a full one. It is also
+the only thing watching whatever starts your runs. Unset, a run that stops arriving tells
+nobody. Pause the check before a seed — a multi-hour run outlasts any sensible grace.
 
 **Zone rules.** Four rules are worth setting on the zone by hand: HTML rewriters off (the
 one that matters — Cloudflare otherwise alters every HTML file it serves), cache bypass, `/`

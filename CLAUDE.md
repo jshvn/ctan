@@ -18,10 +18,11 @@ Everything is in a few files:
 - `docker/Dockerfile`: the toolbox image, and so the pipeline's environment. Every run
   happens inside it, locally and in Actions alike; `task run -- task <args>` runs any task
   in it with the repo at `/work`.
-- `.github/workflows/sync.yml`: hourly at :42, `timeout-minutes: 350`, dispatch inputs
-  `seed`, `reconcile`, `max_batches`. `check.yml`: `task --dry --force sync` and
-  `task lint` on pull requests. Both call `task run --`, so the runner supplies nothing but
-  `task` and a Docker daemon.
+- `.github/workflows/sync.yml`: `workflow_dispatch` alone, `timeout-minutes: 350`, inputs
+  `seed`, `reconcile`, `max_batches`. Nothing in this repo starts it:
+  [`jshvn/dispatch`](https://github.com/jshvn/dispatch), a Cloudflare Workflow, POSTs the
+  dispatch hourly at :42. `check.yml`: `task --dry --force sync` on pull requests. Both call
+  `task run --`, so the runner supplies nothing but `task` and a Docker daemon.
 
 `README.md` is for users and is the mirror's only documentation page; the root URL serves
 CTAN's own `index.html`. Operational detail belongs here and in Taskfile comments.
@@ -81,9 +82,11 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
 - **`checkpoint` is the last step of a batch.** The state is written once per batch, after
   the upload succeeded, as one PutObject. A run that dies anywhere repeats at most one batch
   the next hour. A run that stops at `MAX_BATCHES` with batches left is a success.
-- **Cron lateness is normal.** Scheduled runs start 15 to 45 minutes after :42 and a slot
-  can be dropped. `clock` records the lateness, `report` prints it, and `reconcile` keys on
-  the slot's hour (03 UTC), not the clock's.
+- **The hour a run belongs to is the hour it started.** `clock` writes `epoch UTC-hour` to
+  `RUN/start.txt` at the top of the run, `report` prints the start time from the epoch, and
+  `reconcile` keys `auto` on that hour being 03 -- read at the start because `reconcile` runs
+  late enough that a long run would have crossed into the next hour by then. A run queued
+  behind a longer one can start in 04 and skip the day's reconcile; the next day's does it.
 - **Four Cloudflare defaults must stay off for the mirror.** One zone Configuration Rule
   turns all four off for the mirror's hostname alone, and `docs/reference.md` section 6 has
   each with its expression. Three of them alter `text/html` in flight, so the bytes stop
@@ -123,9 +126,10 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   section 7 has the measurements.
 - **Do not trust the job log for counts.** `report` counts from `RUN` (`run/`), never the log.
 - **A failed run is the only alert.** The check is cron `42 * * * *` UTC with a 3 h grace,
-  which absorbs one dropped slot plus a late full run; healthchecks.io emails when the grace
-  passes without `ping`, which also catches GitHub disabling the schedule after 60
-  commit-free days. Pause the check before a seed — a multi-hour run outlasts the grace.
+  which absorbs a queued run plus a full one; healthchecks.io emails when the grace passes
+  without `ping`. It watches the dispatcher too: nothing here starts a run, so a scheduler
+  that stops firing and a pipeline that stops finishing are the same missing ping. Pause the
+  check before a seed — a multi-hour run outlasts the grace.
 - The edge cache is off, by a zone rule, and the pipeline has no purge step. Caching saves
   nothing below 10M reads a month and a one-hour TTL saves nothing at any volume, because
   Cloudflare caches per datacentre; `docs/reference.md` sections 3 and 6 have the
@@ -137,7 +141,6 @@ Every offline check runs inside the toolbox image; `fixtures/` (git-excluded) ho
 dante listing and a signed `tlpkg/` tree.
 
 - `task run -- task --dry --force sync` renders the pipeline without touching the network.
-- `task run -- task lint` checks the cron minute against `CRON_MINUTE`.
 - `task run -- task normalise RUN=/work/fixtures/run` from a canned `listing.txt`.
 - `task run -- task diff RUN=<dir>` / `task plan RUN=<dir> STAGING=<dir>` from canned
   `upstream.txt`, `applied.txt`, `changed.txt`.
@@ -192,9 +195,8 @@ Eight hazards, each of which has cost an evening:
   input can be filtered down to nothing takes `-r`.
 - **Only what `RUNNER` names crosses into the container.** `report` reads
   `GITHUB_STEP_SUMMARY`, whose value is a path on the runner, so the variable is passed *and*
-  the file bind-mounted at that same path; `GITHUB_EVENT_NAME` rides along, without which
-  every run reads as `local` and the cron lateness line never prints. A host variable the
-  pipeline reads and `RUNNER` does not name arrives empty, and the fallback hides it.
+  the file bind-mounted at that same path -- a host variable the pipeline reads and `RUNNER`
+  does not name arrives empty, and the fallback hides it.
 - **`-i -t` is an error when neither end is a terminal**, which is every CI run, so `RUNNER`
   adds `-t` only when both are. A container without it gets no terminal, and `task` colours
   its output only for one; the workflows pass `--color` instead.

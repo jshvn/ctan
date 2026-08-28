@@ -12,4 +12,3 @@ jobs:
       - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
       # --color because the container has no terminal to infer it from, and the job log reads better with it.
       - run: task run -- task --color --dry --force sync   # renders every command, including status-gated tasks, without the network
-      - run: task run -- task --color lint
