@@ -93,7 +93,7 @@ tasks:
           "" \
           "${c}pipeline -- needs R2 credentials${r}" \
           "  task sync         One hour of the mirror, upstream listing diffed against {{.S3}}" \
-          "                    ${d}clock list state rebuild? diff plan tlpdb batches delete reconcile? smoke report ping${r}" \
+          "                    ${d}clock list state rebuild? diff plan tlpdb batches delete reconcile? index smoke report ping${r}" \
           "                    ${d}vars: SEED=true RECONCILE=true MAX_BATCHES=n BATCH_GB=n${r}" \
           "                    ${d}vars: BUCKET=<scratch> runs it for real without touching {{.BUCKET}}${r}" \
           "  task seed         First fill of an empty bucket: sync with SEED=true and no batch limit" \
@@ -107,6 +107,7 @@ tasks:
           "  task run -- task diff RUN=<dir>                          canned upstream/applied -> changed/deleted" \
           "  task run -- task plan RUN=<dir> STAGING=<dir>            changed.txt -> batch-NNNN.txt" \
           "  task run -- task merge B=<batch> RUN=<dir> STAGING=<dir> the state arithmetic" \
+          "  task run -- task render RUN=<dir> STAGING=<dir>          indexed.txt vs applied.txt -> directory pages" \
           "  task run -- task smoke RUN=<dir> URL=file:///work/<dir>" \
           "  task run -- task retry CMD='exit 5' RETRY_BASE=0" \
           "  ${d}all of them read fixtures/ (git-excluded): a real dante listing and a signed tlpkg/ tree${r}" \
@@ -137,7 +138,7 @@ tasks:
           ""
 
   sync:
-    desc: clock -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> smoke -> report -> ping
+    desc: clock -> list -> state -> rebuild? -> diff -> plan -> tlpdb -> batches -> delete -> reconcile? -> index -> smoke -> report -> ping
     cmds:
       - {task: clock}
       - {task: list}
@@ -149,6 +150,7 @@ tasks:
       - {task: batches}
       - {task: delete}
       - {task: reconcile}
+      - {task: index}
       - {task: smoke}
       - {task: report}
       - {task: ping}
@@ -456,6 +458,30 @@ tasks:
           { print "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>" > f }
           END { if (live) shut() }'
 
+  index:
+    desc: Redraw the directory pages this run changed and publish them; INDEXED, the state the pages last showed, moves forward only after they landed
+    set: [pipefail]
+    cmds:
+      # Same ls semantics as state. No INDEXED means no page has been drawn: every directory
+      # is drawn once, about 27k PutObjects and ten minutes, and the file exists from then on.
+      - |
+        rc=0; aws s3 ls {{.S3}}/{{.INDEXED}} > /dev/null || rc=$?
+        case $rc in
+          0) aws s3 cp {{.AWS_FLAGS}} {{.S3}}/{{.INDEXED}} {{.RUN}}/indexed.txt.xz
+             xz -dc {{.RUN}}/indexed.txt.xz > {{.RUN}}/indexed.txt ;;
+          1) : > {{.RUN}}/indexed.txt ;;
+          *) exit $rc ;;
+        esac
+      - {task: render}
+      # cp --recursive guesses text/html from the suffix. The pages stay in staging for smoke;
+      # the next run's plan clears them. Not appended to publish.txt: smoke sizes that
+      # sample against upstream, which has no pages.
+      - test ! -s {{.RUN}}/index-make.txt || aws s3 cp {{.AWS_FLAGS}} --recursive {{.STAGING}}/ {{.S3}}/
+      - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
+      # A run that dies before this line redraws the same pages next hour.
+      - xz -T0 -c {{.RUN}}/applied.txt > {{.RUN}}/indexed.new.xz
+      - aws s3 cp {{.AWS_FLAGS}} {{.RUN}}/indexed.new.xz {{.S3}}/{{.INDEXED}}
+
   checkpoint:
     internal: true
     requires: {vars: [B]}
@@ -503,7 +529,11 @@ tasks:
     cmds:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
-      - cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/' | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/orphans.txt
+      # The directory pages are ours, not upstream's: index owns them, so they are no orphans.
+      - >-
+        cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/'
+        | awk -v i="/{{.INDEX}}" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i'
+        | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/orphans.txt
       - {task: delete, vars: {D: '{{.RUN}}/orphans.txt'}}
 
   smoke:
@@ -523,6 +553,14 @@ tasks:
         test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
         test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}} ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512
+      # One redrawn page, read back by its key (no zone rule needed) and sized against the
+      # copy still in staging, the same one-byte ranged read as the sample above.
+      - >-
+        test ! -s {{.RUN}}/index-make.txt ||
+        head -1 {{.RUN}}/index-make.txt | awk -v i="{{.INDEX}}" '{ print $0 i }' | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
+        want=$(wc -c < "{{.STAGING}}/$k" | tr -d ' ');
+        got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
+        echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done
 
   report:
     desc: Append the run summary to the Actions job page (stdout elsewhere) from the counts in RUN
@@ -540,6 +578,7 @@ tasks:
         |---|---|
         | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next hour" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
         | Published to R2 | $(grep -c '^upload:' {{.RUN}}/publish.txt 2>/dev/null || true) uploaded |
+        | Directory pages | $(n {{.RUN}}/index-make.txt) redrawn, $(n {{.RUN}}/index-gone.txt) removed |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && awk -F'\t' '{ s += $2 } END { printf "%.2f GB in %d objects (reconciled)", s / 1e9, NR }' {{.RUN}}/bucket.txt || echo "not measured this run") of the {{.CEILING_GB}} GB ceiling |
         | Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlnet tlpdb signed by {{.TL_KEY}}; $(n {{.RUN}}/tl/missing.txt) named containers missing from the bucket" || echo "no tlnet keys in this delta") |
