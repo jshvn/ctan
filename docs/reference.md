@@ -54,7 +54,7 @@ Source: [R2 limits](https://developers.cloudflare.com/r2/platform/limits/),
 | Writes per key | 1 per second | one state write per batch, minutes apart | 429 |
 | `ListObjectsV2` page | 1,000 keys | 497 pages per reconcile | — |
 | `DeleteObjects` batch | 1,000 keys | one call in a typical hour | `MalformedXML` |
-| Class A operations | 1M/month free, then $4.50/M | ~26 an hour | bill |
+| Class A operations | 1M/month free, then $4.50/M | ~30 an hour | bill |
 | Class B operations | 10M/month free, then $0.36/M | 1 a run plus user traffic | bill |
 | Custom domains per bucket | 100 | 1 | — |
 
@@ -70,9 +70,9 @@ lists the rules the mirror wants and why.
 | Limit | Value | What the mirror asks |
 |---|---|---|
 | Cache Rules | 10 | 1 |
-| Transform Rules | 10, no regex on Free | 1 |
+| Transform Rules | 10, no regex on Free | 2 |
 | Configuration Rules | 10 | 1 |
-| Single Redirects | 10 | 1 |
+| Single Redirects | 10 | 0 |
 | Cacheable object size | 512 MB | 7 objects over it, served from R2 every time |
 | Upload through the zone | 100 MB | 0; uploads go to the S3 endpoint |
 
@@ -133,9 +133,9 @@ one million — so any Class A overage at all costs $4.50.
 
 | Item | Value |
 |---|---|
-| Storage today | 133 GB-month, minus 10 free, 123 × $0.015 = **$1.85/month** |
+| Storage today | 133 GB-month (0.07 of it directory pages), minus 10 free, 123 × $0.015 = **$1.85/month** |
 | At the 200 GB ceiling | 190 billable = $2.85/month |
-| Class A per month | 30 reconcile listings + 720 state writes + churn ≈ 32,120 → $0 |
+| Class A per month | 30 reconcile listings + 1,440 state writes + churn + a few thousand directory pages ≈ 36k → $0; drawing every page once is 27k |
 | Class B per month | 720 state reads + about 5,760 `smoke` reads ≈ 6.5k → $0 |
 | One uncached `scheme-full` install | 11,919 GETs, 5.51 GB; free until 27 installs a day |
 | Budget | $5/month; `plan` refuses a tree over `CEILING_GB` (200) before anything uploads |
@@ -223,6 +223,20 @@ Nothing to purge: the edge holds nothing while the cache bypass rule is in place
 upstream still has the key, the daily reconcile finds it missing and the next hourly run
 re-fetches it. Editing the state by hand to get it back sooner is not worth the risk.
 
+**Redraw every directory page.**
+
+```sh
+aws s3 rm s3://ctan/.state/indexed.txt.xz
+```
+
+The next run finds no record of what the pages show and draws all 27k, about ten minutes
+and 27k Class A. Safe; the bucket's files are untouched.
+
+**A directory URL is a 404.** The page is at its key regardless of the zone:
+`curl -sI https://ctan.ijosh.com/systems/knuth/ctan.ijosh.com.directory.index.html`. If that
+is 200 and the directory URL is not, the second Transform Rule in section 6 is missing or
+mis-scoped.
+
 **Rotate a secret.**
 
 ```sh
@@ -277,7 +291,7 @@ and an unscoped path match reaches all of it.
 | Configuration Rules | HTML rewriters off | `(http.host eq "ctan.ijosh.com")` | Email Obfuscation off, Rocket Loader off |
 | Cache Rules | cache off | `(http.host eq "ctan.ijosh.com")` | Cache eligibility: bypass cache |
 | Transform Rules | `/` serves CTAN's `index.html` | `(http.host eq "ctan.ijosh.com" and http.request.uri.path eq "/")` | Rewrite path to `/index.html` |
-| Single Redirects | directory URLs | `(http.host eq "ctan.ijosh.com" and ends_with(http.request.uri.path, "/") and http.request.uri.path ne "/")` | Dynamic, 302, target `concat("https://ctan.org/tex-archive", http.request.uri.path)`, query string not preserved |
+| Transform Rules | directory URLs serve the mirror's page | `(http.host eq "ctan.ijosh.com" and ends_with(http.request.uri.path, "/") and http.request.uri.path ne "/")` | Rewrite path, dynamic: `concat(http.request.uri.path, "ctan.ijosh.com.directory.index.html")` |
 
 **The Configuration Rule is the one that matters.** Email Address Obfuscation rewrites every
 `text/html` response Cloudflare serves: it injects a script, encodes mailto addresses, and
@@ -289,8 +303,8 @@ Cloudflare drops `content-length` from `text/html` responses whether or not thos
 are on, which is why `smoke` sizes an object from a one-byte ranged read rather than a HEAD.
 
 The other three are conveniences: without the cache rule the zone's default caching applies
-(it answers `DYNAMIC` today), without the transform rule `/` is a 404, and without the
-redirect rule a directory URL is a 404 rather than a trip to ctan.org.
+(it answers `DYNAMIC` today), without the first transform rule `/` is a 404, and without the
+second every other directory URL is.
 
 A rule already in one of those phases that serves another hostname is not ours to replace:
 a phase is written whole, so anything else in it would go. Add to it rather than over it.
@@ -300,3 +314,36 @@ free tier covers every read and caching saves nothing, a one-hour TTL is worthle
 Cloudflare caches per datacentre, and only a 24-hour TTL pays — first at around 100M
 requests a month, which is roughly ten times what a CTAN mirror sees. Turning it on also
 means purging every changed key after each batch, which the pipeline no longer does.
+
+## 7. Why directory pages
+
+Investigated 2026-08-27.
+
+**Nothing on the platform can list a directory except the pipeline.** R2 serves no
+directory listings and has no index-document setting; Cloudflare's own docs say a public
+bucket's domain does "not let you list the bucket contents at the root of your (sub)
+domain," an open feature request for years. The rules engine can't generate one either —
+Transform, Redirect, Configuration and Cache rules only rewrite requests and responses that
+already exist. Snippets are ruled out on their own limits: 5 ms CPU, 2 MB memory, 32 KB
+package, no R2 binding. A Worker with an R2 binding could list a bucket, at the price of a
+compute layer in front of a mirror that has none, plus `wrangler` against a repo whose tool
+list is fixed.
+
+**CTAN documents listings as a mirror convention, not a requirement.** Its
+[instructions for mirror operators](https://ctan.org/mirrors/register/) tell them to set
+`Options +Indexes` with `DirectoryIndex disabled`, so the ~111 `index.html` files scattered
+through the archive's package directories don't shadow the generated listing. The stated
+musts are narrower: HTTPS, rsync from `rsync.dante.ctan.org`, and hourly sync at a fixed
+random minute.
+
+**Every other mirror follows the convention.** A survey of all 107 mirrors on
+[mirmon](https://ctan.org/mirrors/mirmon), run 2026-08-27, fetched `macros/latex/` from
+each: 104 returned a directory listing (Apache autoindex, nginx, Caddy's browse template,
+and a few themed or JavaScript indexes), 3 failed to connect, and none redirected elsewhere.
+At the archive root most serve CTAN's own `index.html` instead, which is why `/` is
+rewritten to it here and no other directory URL is.
+
+**Redirecting to ctan.org instead would take the visitor off the mirror.** CTAN's browse
+pages link downloads through `mirrors.ctan.org`, which hands the visitor a randomly chosen
+mirror — so a directory URL sent there would cost every download that follows, not only the
+listing.
