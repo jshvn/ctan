@@ -468,6 +468,21 @@ tasks:
       - mv {{.RUN}}/applied.new {{.RUN}}/applied.txt
       - find {{.STAGING}} -mindepth 1 -delete
 
+  remove:
+    internal: true
+    requires: {vars: [K]}
+    status: ['test ! -s {{.K}}']   # nothing to remove
+    set: [pipefail]
+    cmds:
+      - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.K}} {{.RUN}}/del-
+      # Quiet mode returns only errors, and the CLI exits 0 even then, so grep for them.
+      - >-
+        for f in {{.RUN}}/del-*; do
+        awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
+             printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
+        > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
+        | { test "$(grep -c Errors)" = 0; }; done
+
   delete:
     desc: Remove the keys in D (RUN/deleted.txt unless given), 1,000 per DeleteObjects call and free, and drop them from the state
     vars:
@@ -477,16 +492,8 @@ tasks:
     # Nothing to delete, or a batch is still waiting for a later hour: the live tlpdb may
     # still name these containers, so they go only in the hour every batch has landed.
     status: ['test ! -s {{.D}} || test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}}']
-    set: [pipefail]
     cmds:
-      - rm -f {{.RUN}}/del-*; split -l 1000 -a 4 {{.D}} {{.RUN}}/del-
-      # Quiet mode returns only errors, and the CLI exits 0 even then, so grep for them.
-      - >-
-        for f in {{.RUN}}/del-*; do
-        awk 'BEGIN { printf "{\"Objects\":[" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
-             printf "%s{\"Key\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "],\"Quiet\":true}" }' "$f" \
-        > "$f.json" && aws s3api delete-objects --bucket {{.BUCKET}} --delete "file://$f.json" | tee -a {{.RUN}}/publish.txt
-        | { test "$(grep -c Errors)" = 0; }; done
+      - {task: remove, vars: {K: '{{.D}}'}}
       - {task: checkpoint, vars: {B: '{{.D}}'}}
 
   reconcile:
