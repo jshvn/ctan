@@ -19,7 +19,8 @@ Measured 2026-08-26 from a dereferenced dante listing (538,289 lines, 6.9 s wall
 | Stored set | 496,149 objects, 132.99 GB (123.86 GiB) |
 | Largest object | 6,865,013,189 B (`systems/mac/mactex/MacTeX.pkg`) |
 | Longest key | 151 bytes |
-| Distinct directories | 24,953 |
+| Distinct directories holding a file directly | 24,953 (24,952 plus the root) |
+| Distinct directories, every one incl. file-less | 27,262: adds 2,309 that hold only subdirectories — what `render` draws a page for (2026-08-27) |
 | Churn, last 30 days | 16,574 files, 4.72 GB; 23.0 files per hour on average |
 | Hour-slots with any change, last 30 days | 284 of 720 |
 | Hour-slots over 1,000 files, last 30 days | 3 |
