@@ -383,7 +383,15 @@ tasks:
       # clause is the belt: a container the tlpdb says nothing about cannot pass. Written to
       # a file rather than piped, so awk's status is its own; verify runs without pipefail
       # because the grep above legitimately matches nothing.
+      # A batch that carries no container skips all of it. RUN/tl belongs to tlpdb, whose
+      # status gate is the delta touching tlnet at all, so an hour that changes nothing there
+      # never makes the directory and the redirect below would have nowhere to write. want is
+      # empty in that case anyway, leaving the belt nothing to refuse. Whenever the guard does
+      # pass, the batch holds a tlnet path, so tlpdb ran and RUN/tl is there. The sums are
+      # checked inside the same command that writes them, so no batch is ever checked against
+      # the sums left by the batch before it -- fetch empties staging between the two.
       - >-
+        test "$(grep -c '^{{.TL}}/archive/' {{.B}})" = 0 || {
         awk -F'\t' -v TL="{{.TL}}" 'NR == FNR { if (index($1, TL "/archive/") == 1) want[$1] = 1; next }
           /^name /{split($0, a, " "); n = a[2]} /^revision /{split($0, a, " "); r = a[2]}
           /^containerchecksum /{split($0, a, " "); emit(a[2], n)}
@@ -393,8 +401,8 @@ tasks:
             if (p in want) { print sum "  " p; delete want[p] }
             if (q in want) { print sum "  " q; delete want[q] } }
           END { for (p in want) { print "no checksum in the tlpdb for " p > "/dev/stderr"; bad = 1 } exit bad }' \
-        {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt
-      - test ! -s {{.RUN}}/tl/sums.txt || shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt
+        {{.B}} {{.RUN}}/tl/tlpkg/texlive.tlpdb > {{.RUN}}/tl/sums.txt &&
+        shasum -a 512 -c --quiet {{.RUN}}/tl/sums.txt; }
       # The decision batch. The tlpdb it carries must be the one verified at the start of
       # the run, the .xz tlmgr downloads must decompress to it byte for byte, and every
       # container it names must be in the bucket after this run: the state, plus this
