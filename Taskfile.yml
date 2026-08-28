@@ -16,6 +16,11 @@ vars:
   INDEX: '{{.HOST}}.directory.index.html'      # the page index draws in every directory; no upstream path can carry the name
   RUN: '{{.ROOT_DIR}}/run'                      # run outputs; outside staging so nothing here is uploaded; git-ignored
   STAGING: '{{.ROOT_DIR}}/staging'
+  # Every page is written under two keys: <dir>/INDEX, which the zone's rewrite serves for a
+  # directory URL, and <dir> without its trailing slash, which serves the same URL written
+  # without one, where every other mirror answers 301. No filesystem holds both a/b and
+  # a/b/, so the second copies stage one tree per directory depth and upload a tree at a time.
+  SLASH: '{{.RUN}}/slash'
   TL: systems/texlive/tlnet                     # the one signed subtree
   TL_KEY: C78B82D8C79512F79CC0D7C80D5E5D9106BAB6BC   # tug.org/texlive/verify.html
   CRON_MINUTE: 42                               # the minute in sync.yml's cron; lint checks they agree
@@ -114,7 +119,8 @@ tasks:
           "  task run -- task plan RUN=<dir> STAGING=<dir>            changed.txt -> batch-NNNN.txt" \
           "  task run -- task merge B=<batch> RUN=<dir> STAGING=<dir> the state arithmetic" \
           "  task run -- task render RUN=<dir> STAGING=<dir>          indexed.txt vs applied.txt -> directory pages" \
-          "  task run -- task smoke RUN=<dir> URL=file:///work/<dir>" \
+          "  task run -- task smoke RUN=<dir> STAGING=<dir> URL=file:///work/<dir>" \
+          "                    ${d}the page check needs STAGING; over file:// only the INDEX key is read${r}" \
           "  task run -- task retry CMD='exit 5' RETRY_BASE=0" \
           "  ${d}all of them read fixtures/ (git-excluded): a real dante listing and a signed tlpkg/ tree${r}" \
           "" \
@@ -431,10 +437,10 @@ tasks:
         | cat - <(LC_ALL=C join -t "$(printf '\t')" {{.RUN}}/landed.txt {{.B}}) | LC_ALL=C sort > {{.RUN}}/applied.new
 
   render:
-    desc: RUN/indexed.txt against RUN/applied.txt -> a page in STAGING/<dir>/INDEX for every directory a changed line touches, RUN/index-gone.txt for the pages of directories that emptied
+    desc: RUN/indexed.txt against RUN/applied.txt -> a page under both of its keys for every directory a changed line touches, RUN/index-gone.txt for the keys of directories that emptied
     set: [pipefail]
     cmds:
-      - mkdir -p {{.STAGING}} && find {{.STAGING}} -mindepth 1 -delete
+      - mkdir -p {{.STAGING}} {{.SLASH}} && find {{.STAGING}} {{.SLASH}} -mindepth 1 -delete
       # A page changes when a file in its directory or a directory below it appears, changes
       # or goes, so every ancestor of every changed line is redrawn. ponytail: about five
       # pages per touched directory where one would often do; ceiling is Class A, a few
@@ -444,31 +450,48 @@ tasks:
         LC_ALL=C comm -3 {{.RUN}}/indexed.txt {{.RUN}}/applied.txt | awk -F'\t' '{ print ($1 == "" ? $2 : $1) }'
         | {{.ANCESTORS}} | LC_ALL=C sort > {{.RUN}}/index-dirty.txt
       - '{{.ANCESTORS}} {{.RUN}}/applied.txt | LC_ALL=C sort > {{.RUN}}/index-dirs.txt'
-      - LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt | awk -v i="{{.INDEX}}" '{ print $0 i }' > {{.RUN}}/index-gone.txt
+      # A gone directory takes both of its keys with it. The root has no slashless key.
+      - >-
+        LC_ALL=C comm -23 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt
+        | awk -v i="{{.INDEX}}" '{ print $0 i } $0 != "" { print substr($0, 1, length($0) - 1) }' > {{.RUN}}/index-gone.txt
       - LC_ALL=C comm -12 {{.RUN}}/index-dirty.txt {{.RUN}}/index-dirs.txt > {{.RUN}}/index-make.txt
       - test ! -s {{.RUN}}/index-make.txt || awk -v s="{{.STAGING}}/" '{ print s $0 }' {{.RUN}}/index-make.txt | tr '\n' '\0' | xargs -0 mkdir -p
+      # SLASH/<depth>/ holds the slashless copies of the pages at that depth. Every file in
+      # one tree has the same number of components, so no file is another's parent directory
+      # and the tree can be uploaded whole.
+      - >-
+        test ! -s {{.RUN}}/index-make.txt ||
+        awk -v r="{{.SLASH}}/" '$0 != "" { n = split($0, c, "/"); d = ""
+          for (i = 1; i < n - 1; i++) d = d c[i] "/"; print r (n - 1) "/" d }' {{.RUN}}/index-make.txt \
+        | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0 mkdir -p
       # Entries, "dir TAB d|f TAB name TAB size TAB mtime", from the state: what the bucket
       # holds, never upstream. Sorted, a directory's lines are contiguous with its
       # subdirectories first, so each page is written once and closed. Names are
-      # percent-encoded in href and HTML-escaped in text (9 carry & < >). Relative hrefs
-      # resolve against the directory URL, which a rewrite leaves in the address bar.
+      # percent-encoded in href and HTML-escaped in text (9 carry & < >). The page is built
+      # whole and written under both of its keys, so the two are the same bytes; the base
+      # href is what lets one document serve /dir/ and /dir alike, where a relative href
+      # would otherwise resolve against the parent for the second.
       - >-
         test ! -s {{.RUN}}/index-make.txt ||
         awk -F'\t' -v OFS='\t' 'NR == FNR { want[$0] = 1; next }
           { n = split($1, c, "/"); d = ""
             for (i = 1; i < n; i++) { if ((d in want) && !((d c[i]) in seen)) { seen[d c[i]] = 1; print d, "d", c[i], "", "" }; d = d c[i] "/" }
             if (d in want) print d, "f", c[n], $2, $3 }' {{.RUN}}/index-make.txt {{.RUN}}/applied.txt \
-        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v I="{{.INDEX}}" '{{.URLENC}}
+        | LC_ALL=C sort | awk -F'\t' -v S="{{.STAGING}}/" -v R="{{.SLASH}}/" -v I="{{.INDEX}}" '{{.URLENC}}
           function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
-          function open(d) { f = S d I; cur = d; live = 1
-            print "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Index of /" esc(d) "</title>" > f
-            print "<style>body{font-family:monospace;margin:2em}td,th{text-align:left;padding:0 1.5em 0 0}</style></head><body>" > f
-            print "<h1>Index of /" esc(d) "</h1><table><tr><th>Name</th><th>Last modified</th><th>Size</th></tr>" > f
-            if (d != "") print "<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>" > f }
-          function shut() { print "</table><p><a href=\"https://ctan.org/tex-archive/" enc(cur) "\">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.</p></body></html>" > f; close(f) }
+          function open(d) { cur = d; live = 1
+            p = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Index of /" esc(d) "</title>\n"
+            p = p "<base href=\"/" enc(d) "\">\n"
+            p = p "<style>body{font-family:monospace;margin:2em}td,th{text-align:left;padding:0 1.5em 0 0}</style></head><body>\n"
+            p = p "<h1>Index of /" esc(d) "</h1><table><tr><th>Name</th><th>Last modified</th><th>Size</th></tr>\n"
+            if (d != "") p = p "<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n" }
+          function shut(  f, b, k, e) { p = p "</table><p><a href=\"https://ctan.org/tex-archive/" enc(cur) "\">This directory on ctan.org</a>. Sizes in bytes, times as CTAN lists them.</p></body></html>\n"
+            f = S cur I; printf("%s", p) > f; close(f)
+            if (cur != "") { b = substr(cur, 1, length(cur) - 1); k = split(b, e, "/")
+              f = R k "/" b; printf("%s", p) > f; close(f) } }
           !live || $1 != cur { if (live) shut(); open($1) }
-          $2 == "d" { print "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>" > f; next }
-          { print "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>" > f }
+          $2 == "d" { p = p "<tr><td><a href=\"" enc($3) "/\">" esc($3) "/</a></td><td></td><td></td></tr>\n"; next }
+          { p = p "<tr><td><a href=\"" enc($3) "\">" esc($3) "</a></td><td>" $5 "</td><td>" $4 "</td></tr>\n" }
           END { if (live) shut() }'
 
   index:
@@ -490,6 +513,12 @@ tasks:
       # the next run's plan clears them. Not appended to publish.txt: smoke sizes that
       # sample against upstream, which has no pages.
       - test ! -s {{.RUN}}/index-make.txt || aws s3 cp {{.AWS_FLAGS}} --recursive {{.STAGING}}/ {{.S3}}/
+      # One upload per depth, because no single tree holds both a/b and a/b/. A slashless key
+      # carries no suffix to guess from, so the type is given: without it the CLI sends
+      # binary/octet-stream and a browser downloads the page instead of drawing it.
+      - >-
+        for d in {{.SLASH}}/*/; do test -d "$d" || continue;
+        aws s3 cp {{.AWS_FLAGS}} --recursive --content-type text/html "$d" {{.S3}}/; done
       - {task: remove, vars: {K: '{{.RUN}}/index-gone.txt'}}
       # A run that dies before this line redraws the same pages next hour.
       - xz -T0 -c {{.RUN}}/applied.txt > {{.RUN}}/indexed.new.xz
@@ -543,9 +572,16 @@ tasks:
       - touch {{.RUN}}/rebuild-now
       - {task: rebuild}
       # The directory pages are ours, not upstream's: index owns them, so they are no orphans.
+      # One key names itself (the INDEX suffix); the other is a bare directory of the state,
+      # indistinguishable from a CTAN path, so the state's own directory set is the list.
+      # A path that stops being a directory upstream leaves the set and is judged as a file.
+      - >-
+        {{.ANCESTORS}} {{.RUN}}/applied.txt
+        | awk '$0 != "" { print substr($0, 1, length($0) - 1) }' | LC_ALL=C sort > {{.RUN}}/index-keys.txt
       - >-
         cut -f1 {{.RUN}}/bucket.txt | grep -vE '^\.state/'
         | awk -v i="/{{.INDEX}}" '{ s = "/" $0 } substr(s, length(s) - length(i) + 1) != i'
+        | LC_ALL=C comm -23 - {{.RUN}}/index-keys.txt
         | LC_ALL=C comm -23 - {{.RUN}}/paths.txt > {{.RUN}}/orphans.txt
       - {task: delete, vars: {D: '{{.RUN}}/orphans.txt'}}
 
@@ -566,14 +602,22 @@ tasks:
         test ! -f {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512 ||
         test "$(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l)" -gt {{.MAX_BATCHES}} ||
         {{.CURL}} {{.URL}}/{{.TL}}/tlpkg/texlive.tlpdb.sha512 | cmp - {{.RUN}}/tl/tlpkg/texlive.tlpdb.sha512
-      # One redrawn page, read back by its key (no zone rule needed) and sized against the
-      # copy still in staging, the same one-byte ranged read as the sample above.
+      # One redrawn page under both of its keys, read back by key (no zone rule needed) and
+      # sized against the copy still in staging, the same one-byte ranged read as the sample
+      # above. Both keys hold the same bytes, so one staged copy sizes both. The root is
+      # drawn but has no slashless key, and / is CTAN's own index.html.
+      # ${d} in braces: the INDEX that follows it opens with a letter, and $d{{.INDEX}} names
+      # a variable that does not exist. test -n makes that a stated failure, not a size of "".
+      # The slashless key is read only over http: the offline harness serves the pages off a
+      # filesystem, which cannot hold both a/b and a/b/, the same fact the second key rests on.
       - >-
-        test ! -s {{.RUN}}/index-make.txt ||
-        tail -1 {{.RUN}}/index-make.txt | awk -v i="{{.INDEX}}" '{ print $0 i }' | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
-        want=$(wc -c < "{{.STAGING}}/$k" | tr -d ' ');
+        test ! -s {{.RUN}}/index-make.txt || { d=$(tail -1 {{.RUN}}/index-make.txt);
+        want=$(wc -c < "{{.STAGING}}/${d}{{.INDEX}}" | tr -d ' '); test -n "$want";
+        case "{{.URL}}" in http*) b=1 ;; *) b=0 ;; esac;
+        printf '%s\n' "$d" | awk -v i="{{.INDEX}}" -v b="$b" '{ print $0 i } b == 1 && $0 != "" { print substr($0, 1, length($0) - 1) }'
+        | {{.ENCODE}} | while IFS="$(printf '\t')" read -r k u; do
         got=$({{.CURL}} -r 0-0 -D - -o /dev/null "{{.URL}}/$u" | {{.SIZE}});
-        echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done
+        echo "$k: $got bytes (page: $want)"; test "$got" = "$want" || exit 1; done; }
 
   report:
     desc: Append the run summary to the Actions job page (stdout elsewhere) from the counts in RUN
@@ -591,7 +635,7 @@ tasks:
         |---|---|
         | Delta | $(n {{.RUN}}/changed.txt) new or changed in $(ls {{.RUN}}/batch-*.txt 2>/dev/null | wc -l | awk -v m={{.MAX_BATCHES}} '{ print $1 " batches" ($1 > m ? ", " $1 - m " left for the next hour" : "") }'); $(n {{.RUN}}/deleted.txt) deleted, $(n {{.RUN}}/orphans.txt) orphaned |
         | Published to R2 | $(grep -c '^upload:' {{.RUN}}/publish.txt 2>/dev/null || true) uploaded |
-        | Directory pages | $(n {{.RUN}}/index-make.txt) redrawn, $(n {{.RUN}}/index-gone.txt) removed |
+        | Directory pages | $(n {{.RUN}}/index-make.txt) redrawn under both keys, $(n {{.RUN}}/index-gone.txt) keys removed |
         | State | $(n {{.RUN}}/applied.txt) lines in {{.STATE}} |
         | Storage | $(test -f {{.RUN}}/bucket.txt && awk -F'\t' '{ s += $2 } END { printf "%.2f GB in %d objects (reconciled)", s / 1e9, NR }' {{.RUN}}/bucket.txt || echo "not measured this run") of the {{.CEILING_GB}} GB ceiling |
         | Signature | $(test -f {{.RUN}}/tl/tlpkg/texlive.tlpdb && echo "tlnet tlpdb signed by {{.TL_KEY}}; $(n {{.RUN}}/tl/missing.txt) named containers missing from the bucket" || echo "no tlnet keys in this delta") |
