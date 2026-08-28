@@ -6,8 +6,8 @@ date it was verified. Re-verify before leaning on a stale one; the commands that
 the measured figures are named beside them.
 
 Conventions: GB is 10^9 bytes, GiB and MiB are binary. R2 publishes binary figures, CTAN
-decimal. "Stored set" is what `rsync -rL` yields minus tlnet's versioned containers and the
-`update-tlmgr-r*` root files, which is what `normalise` drops.
+decimal. "Stored set" is every regular file `rsync -rL` yields, which is what `normalise`
+keeps.
 
 ## 1. Baseline
 
@@ -16,7 +16,8 @@ Measured 2026-08-26 from a dereferenced dante listing (538,289 lines, 6.9 s wall
 
 | Quantity | Value |
 |---|---|
-| Stored set | 496,149 objects, 132.99 GB (123.86 GiB) |
+| Stored set | 511,027 objects, 139.63 GB (130.04 GiB) |
+| Of which revision-stamped tlnet and tlcontrib containers | 15,133 objects, 7.09 GB, each the same bytes as its stable twin |
 | Largest object | 6,865,013,189 B (`systems/mac/mactex/MacTeX.pkg`) |
 | Longest key | 151 bytes |
 | Distinct directories holding a file directly | 24,953 (24,952 plus the root) |
@@ -29,7 +30,7 @@ Measured 2026-08-26 from a dereferenced dante listing (538,289 lines, 6.9 s wall
 | Busiest hour by bytes, installers excluded | under 0.001 GB |
 | Objects over R2's 4.995 GiB single-part limit | 5: two MacTeX pkgs at 6.87 GB, three ISOs at 6.78 GB |
 | Objects over Cloudflare's 512 MB cacheable limit | 7: the five above plus two `protext` zips at 1.14 GB |
-| Whole tree at `BATCH_GB=4` | 25 batches plus 5 lone oversize files = 30 rsync connections; largest batch 97,569 files |
+| Whole tree at `BATCH_GB=4` | 28 batches plus 5 lone oversize files = 33 rsync connections; largest batch 98,141 files |
 
 The churn figure is a floor: a file changed twice in a month counts once, because it is
 derived from current mtimes. Even at three times the measured rate it stays under 100k
@@ -46,7 +47,7 @@ Source: [R2 limits](https://developers.cloudflare.com/r2/platform/limits/),
 
 | Limit | Value | What the mirror asks | At the limit |
 |---|---|---|---|
-| Objects, storage per bucket | unlimited | 496k, 133 GB | billing only |
+| Objects, storage per bucket | unlimited | 511k, 140 GB | billing only |
 | Object size | 5 TiB (4.995 TiB in practice) | 6.87 GB max | reject |
 | Single-part upload | 4.995 GiB = 5,363,466,240 B | 5 objects exceed it, so go multipart | `EntityTooLarge`, run fails |
 | Multipart parts | 10,000, each 5 MiB–5 GiB, uniform | 13 parts per 6.87 GB file at 512 MiB | reject |
@@ -128,7 +129,7 @@ vanished mid-transfer) is a success — upstream moved under us and the next run
 | AWS CLI timeouts | connect 60 s, read 300 s as configured |
 | AWS CLI `max_queue_size` | 1,000 tasks; the queue blocks rather than failing |
 | `xz` memory | 100 MB at `-6`, 421 MB at `-9` |
-| `sort` memory | 68 MB for 496k lines |
+| `sort` memory | 68 MB for 511k lines |
 | `shasum -a 512` | about 650 MB/s, so about 7 s per 4 GB batch |
 | `split` suffixes | `-a 4` is needed above 676 files |
 
@@ -148,7 +149,7 @@ one million — so any Class A overage at all costs $4.50.
 
 | Item | Value |
 |---|---|
-| Storage today | 133 GB-month (0.07 of it directory pages), minus 10 free, 123 × $0.015 = **$1.85/month** |
+| Storage today | 139.7 GB-month (0.07 of it directory pages), minus 10 free, 129.7 × $0.015 = **$1.95/month** |
 | At the 200 GB ceiling | 190 billable = $2.85/month |
 | Class A per month | 30 reconcile listings + 1,440 state writes + churn + a few thousand directory pages ≈ 36k → $0; drawing every page once is 27k |
 | Class B per month | 720 state reads + about 5,760 `smoke` reads ≈ 6.5k → $0 |
@@ -235,7 +236,7 @@ gh workflow run sync.yml -f seed=true -f max_batches=40
 ```
 
 Deleting the state object does not start a seed; it fails every run, by design. Safe for
-correctness, not for the budget: the delta is the whole tree, about 496k Class A and 133 GB
+correctness, not for the budget: the delta is the whole tree, about 511k Class A and 140 GB
 from dante. Pause the healthcheck first.
 
 **Delete one key.**
