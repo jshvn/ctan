@@ -5,7 +5,7 @@
 [![mirror](https://healthchecks.io/b/2/f4ad55cc-4b2d-4cce-b133-aba5381d9e71.svg)](https://github.com/jshvn/ctan/actions/workflows/sync.yml)
 
 An hourly mirror of all of [CTAN](https://ctan.org) on Cloudflare R2, served at
-`https://ctan.ijosh.com/` with every CTAN path at the root. About 496,000 files and 133 GB.
+`https://ctan.ijosh.com/` with every CTAN path at the root. About 511,000 files and 140 GB.
 
 ## How to use
 
@@ -61,8 +61,8 @@ nothing for bandwidth, so traffic doesn't move the bill.
    hostname.
 3. Add the four repository secrets below. They are the whole requirement.
 4. Actions -> sync -> Run workflow, with `seed` checked and `max_batches` at 40. The first
-   run uploads everything (about 133 GB, a few hours); every run after it pushes the hourly
-   delta. Storage past R2's free 10 GB costs about $1.86 a month.
+   run uploads everything (about 140 GB, a few hours); every run after it pushes the hourly
+   delta. Storage past R2's free 10 GB costs about $1.95 a month.
 
 | Secret | What it is |
 | --- | --- |

@@ -2,8 +2,8 @@
 
 An hourly mirror of all of `CTAN/` (dante's `rsync://rsync.dante.ctan.org/CTAN/`) on
 Cloudflare R2, served at `https://ctan.ijosh.com/` with every CTAN path at the bucket root.
-About 496,000 objects and 133 GB; the largest file is 6.87 GB. Storage is the only bill,
-about $1.86 a month; the pipeline refuses to run past 200 GB upstream.
+About 511,000 objects and 140 GB; the largest file is 6.87 GB. Storage is the only bill,
+about $1.95 a month; the pipeline refuses to run past 200 GB upstream.
 
 `Taskfile.yml` and its comments are the design. `docs/reference.md` holds the numbers
 behind it: the measured tree, the platform limits and their verification dates, the cost
@@ -42,13 +42,13 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
 - Secrets are exactly five: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
   `AWS_REGION`, `HEALTHCHECK_URL`; the workflow passes each to the Taskfile by name. The four
   `AWS_*` are the whole requirement; without `HEALTHCHECK_URL`, `ping` is skipped.
-- Recompute any change that adds storage against the 133 GB baseline and the 200 GB ceiling.
+- Recompute any change that adds storage against the 140 GB baseline and the 200 GB ceiling.
 
 ## Must knows
 
 Each of these is a bug that has happened or a bill that would. Do not undo them.
 
-- **The mirror is a list-diff, never a local tree.** The runner has 14 GB; the tree is 133 GB.
+- **The mirror is a list-diff, never a local tree.** The runner has 14 GB; the tree is 140 GB.
   `list` takes dante's `rsync -rL --list-only`, `diff` compares it with the state file the
   last run left in the bucket, and only the delta is fetched, in batches of at most 4 GB.
   The bucket is listed only in the daily `reconcile`.
@@ -57,12 +57,14 @@ Each of these is a bug that has happened or a bill that would. Do not undo them.
   `LC_ALL=C`, and every bucket listing is re-sorted because R2 lists keys out of byte order.
 - **The state records what landed.** `merge` joins the batch against `find staging -type f`,
   so a path that vanished upstream between listing and fetch never enters the state.
-- **No versioned containers.** `tlmgr` requests `archive/foo.tar.xz`; upstream stores
-  `foo.r123.tar.xz` and symlinks to it. `normalise` drops tlnet's and tlcontrib's
-  `*.r[0-9]*.tar.xz` and `update-tlmgr-r*`, and `fetch` uses `-L`, so each is stored once.
+- **Every container is served under both its names.** tlnet stores `foo.r123.tar.xz` and
+  symlinks `foo.tar.xz` to it; `tlmgr` asks for the stable name, and `fetch` uses `-L`, so
+  the mirror holds both, as every other CTAN mirror does. `verify` checksums both against
+  the signed tlpdb, deriving the revision-stamped name from the stanza's `revision`, and
+  refuses a batch carrying an `archive/` path the tlpdb does not describe.
 - **A missing state file fails the run** unless `SEED=true` (empty bucket) or
   `RECONCILE=true` (rebuild it from a bucket listing joined to upstream on size). Treating a
-  missing state as empty would re-upload 133 GB.
+  missing state as empty would re-upload 140 GB.
 - **The decision batch is last.** tlnet's `tlpkg/` and the root files (`timestamp` last of
   all) go in the final batch, after every container, and `verify` refuses that batch unless
   every container the tlpdb names is in the bucket after this run. `delete` waits for the
