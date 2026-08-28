@@ -31,8 +31,10 @@ CTAN's own `index.html`. Operational detail belongs here and in Taskfile comment
 - No shell scripts. Logic lives in `Taskfile.yml`; workflows install `task` and run one task
   inside the image.
 - Tools are exactly `rsync`, `aws` (CLI v2), `gpg` (for `gpgv`), `shasum`, `xz`, `curl`,
-  `task`. Network endpoints are exactly dante, R2, the public domain and healthchecks.io.
-  The zone is configured by hand; nothing here calls the Cloudflare API.
+  `task`. The pipeline's network endpoints are exactly dante, R2, the public domain and
+  healthchecks.io; building the image adds `docker.io` for the pinned base and, in the image
+  only, the `task` and AWS CLI releases. The zone is configured by hand; nothing here calls
+  the Cloudflare API.
 - Objects sit at the bucket root under CTAN's own paths. `.state/` is the one reserved
   prefix; CTAN has no dot-prefixed root entry, so it cannot collide.
   `<HOST>.directory.index.html` is the one reserved file name: the page `index` draws in every
@@ -124,7 +126,7 @@ dante listing and a signed `tlpkg/` tree.
   bucket: `task run -- task sync BUCKET=<scratch> SEED=true MAX_BATCHES=1 BATCH_GB=1`.
 - Is the mirror fresh? `curl -s https://ctan.ijosh.com/timestamp`.
 
-Five hazards, each of which has cost an evening:
+Seven hazards, each of which has cost an evening:
 
 - **A `>-` folded block keeps the newline** when a continuation line is indented further
   than the lines around it, and the rendered shell then splits into two commands. End the
@@ -137,3 +139,11 @@ Five hazards, each of which has cost an evening:
   fixture tests. Override the whole var: `RSYNC='rsync --timeout=300 --no-h'`.
 - **`tlpdb`'s status gate reads all of `changed.txt`**, not the batch, so it runs on
   essentially every real run. Only `verify`'s decision-batch branch keys on the batch.
+- **Only what `RUNNER` names crosses into the container.** `report` reads
+  `GITHUB_STEP_SUMMARY`, whose value is a path on the runner, so the variable is passed *and*
+  the file bind-mounted at that same path; `GITHUB_EVENT_NAME` rides along, without which
+  every run reads as `local` and the cron lateness line never prints. A host variable the
+  pipeline reads and `RUNNER` does not name arrives empty, and the fallback hides it.
+- **`-i -t` is an error when neither end is a terminal**, which is every CI run, so `RUNNER`
+  adds `-t` only when both are. A container without it gets no terminal, and `task` colours
+  its output only for one; the workflows pass `--color` instead.

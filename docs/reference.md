@@ -92,6 +92,20 @@ lists the rules the mirror wants and why.
 Log volume is undocumented and lines are silently dropped, which is why `report` counts from
 `RUN/` and never from the log.
 
+Nothing caches the toolbox image. Each job is a fresh VM, `docker build` writes to that VM's
+own daemon store, and it dies with the job, so every run rebuilds from the pinned base: 28 s
+measured 2026-08-28, against a job measured in minutes. Within a job the `image` task's
+`status` guard means one build serves every `task run`. Caching it through the Actions cache
+would buy back less than it costs to maintain.
+
+### Docker Hub
+
+Anonymous pulls are limited to 100 per hour per source IP (`ratelimit-limit: 100;w=3600`,
+read from `registry-1.docker.io` on 2026-08-28). Each run pulls the pinned Ubuntu base once,
+so the mirror wants 1 of the 100. The budget is per IP and GitHub's hosted runners share
+egress addresses, so it is not the mirror's alone; a throttled or failed pull fails the run
+at the build, before any of the pipeline has run.
+
 ### dante and CTAN
 
 | Limit | Value |
@@ -172,6 +186,12 @@ Nothing sends `/start`, so the grace does not cap run duration. Before a seed or
 backlog dispatch, pause the check in the UI — a multi-hour run would otherwise blow the
 grace. A paused check resumes on its next ping.
 
+The second surface is the run's own job page, where `report` appends the delta, upload,
+directory-page, state and storage counts, all read from `RUN/`. It is the first thing to
+read on a run that succeeded and still looks wrong. `report` finds the page through
+`GITHUB_STEP_SUMMARY`; if a run's summary turns up in the step log instead, that variable
+did not reach the container.
+
 ## 5. Runbook
 
 Local commands need the four R2 variables in the environment as `sync.yml` maps them, and
@@ -193,6 +213,10 @@ behind the mirror is.
 
 **Re-run.** `gh workflow run sync.yml`, or `task sync`. Safe: the state is as of the last
 checkpoint and the run recomputes the rest. During a seed this is the resume.
+
+**The run failed before the pipeline started.** A failure inside `task: [image] docker build`
+is the base image pull, not the mirror: Docker Hub was unreachable or throttling. Nothing was
+uploaded and no state moved, so re-running is the whole fix. Section 2 has the pull budget.
 
 **Rebuild the state** — a missing, corrupt or distrusted state file.
 

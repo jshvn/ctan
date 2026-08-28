@@ -94,7 +94,8 @@ served rewritten.
 
 To run the pipeline locally, `task run -- task --dry sync` renders it inside the toolbox
 image (Apple `container` or Docker); with `AWS_*` variables exported, `task run -- task sync`
-runs it for real.
+runs it for real. Every run happens in that image, the hourly one included, so a local run
+and a run in Actions differ only in wall clock.
 
 Pull requests are welcome.
 

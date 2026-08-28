@@ -4,10 +4,13 @@ Pull requests are welcome, especially ones that make the pipeline smaller.
 
 ## Ground rules
 
-- All logic lives in `Taskfile.yml`. Workflows install tools and run one task, nothing
-  more. No shell scripts.
+- All logic lives in `Taskfile.yml`. Workflows install `task` and run one task inside the
+  image, nothing more. No shell scripts.
 - No dependencies beyond `rsync`, `aws` (AWS CLI v2), `gpg`, `shasum`, `xz`, `curl` and
-  `task`. Network endpoints are dante, R2, the public domain and healthchecks.io.
+  `task`, all of them supplied by `docker/Dockerfile`. The pipeline's network endpoints are
+  dante, R2, the public domain and healthchecks.io; building the image adds `docker.io`.
+- Every run happens inside that image, locally and in Actions alike, so a change to the
+  tools is a change to the Dockerfile and nothing else.
 - Storage is the bill. The tree is 133 GB and the pipeline refuses to run past 200 GB
   upstream; if a change adds storage or Class A operations, say by how much in the PR.
 - Objects sit at the bucket root under CTAN's own paths, so every CTAN path is a URL path.
@@ -20,10 +23,13 @@ Pull requests are welcome, especially ones that make the pipeline smaller.
 ## Checking a change
 
 ```sh
-task --dry --force sync                             # render every command, no network
-task lint                                           # the cron minute agrees with CRON_MINUTE
-task smoke RUN=<dir> URL=file:///<dir>              # read-back check, offline
+task run -- task --dry --force sync                 # render every command, no network
+task run -- task lint                               # the cron minute agrees with CRON_MINUTE
+task run -- task smoke RUN=<dir> URL=file:///work/<dir>   # read-back check, offline
 ```
+
+`task run` builds the image on first use and mounts the repo at `/work`, which is why the
+paths above are the container's.
 
 The `check` workflow runs the first two on every pull request. `CLAUDE.md` lists the rest of
 the offline checks; they read a `fixtures/` tree (git-excluded) you supply yourself: a real
