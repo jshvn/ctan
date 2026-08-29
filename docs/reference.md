@@ -163,6 +163,83 @@ twice a run would cost $4.50/month at 200 GB.
 Whether R2's storage meter counts GB as 10^9 or 2^30 is unverified; this file uses 10^9,
 the larger bill. If it is binary the same bucket is 114 GB-month, $1.71.
 
+### Traffic
+
+Every figure above is what the pipeline itself spends. What readers spend is measured
+2026-08-29 from [dotsrc.org's request logs](https://dotsrc.org/statistics/), which record
+every HTTP request to `mirrors.dotsrc.org` by path and size and publish them as daily JSON:
+its CTAN tree over five sampled days (2021-11-16, 2022-01-19, 2022-02-16, 2022-03-05,
+2022-03-09).
+
+| Quantity | Value |
+|---|---|
+| One mid-tier mirror | 68,080 requests and 85 GB a day = 2.1M requests, 2.6 TB a month |
+| Spread across the five days | 46,770–109,710 requests, 31.4–118.0 GB |
+| Mean object served | 1.25 MB |
+| CTAN-wide, across about 100 mirrors | roughly 150M requests and 200 TB a month |
+
+The CTAN-wide line is an estimate, not a measurement: it puts dotsrc at 1.4% of the archive's
+traffic and the primary nodes, which [Wikipedia](https://en.wikipedia.org/wiki/CTAN) records
+at over 6 TB a month, at 3% of its bytes. Read it to a factor of two.
+
+Egress is free, so the bytes never bill and only the request count does — one Class B op per
+GET, 10M free, then $0.36 per million rounded up. This bucket's bill against the share of all
+CTAN traffic it might carry, with the cache bypassed as it is today:
+
+| Share of CTAN | Requests/month | Requests/s | TB/month | Class B billed | Total/month |
+|---|---|---|---|---|---|
+| 1% | 1.5M | 0.6 | 2 | 0 | $1.95 |
+| 3% | 4.5M | 1.7 | 6 | 0 | $1.95 |
+| 5% | 7.5M | 2.9 | 10 | 0 | $1.95 |
+| 8% | 12.0M | 4.6 | 16 | 2M | $2.67 |
+| 10% | 15.0M | 5.7 | 20 | 5M | $3.75 |
+| 15% | 22.5M | 8.6 | 30 | 13M | $6.63 |
+| 20% | 30.0M | 11.4 | 40 | 20M | $9.15 |
+| 50% | 75.0M | 28.5 | 100 | 65M | $25.35 |
+| 75% | 112.5M | 42.8 | 150 | 103M | $39.03 |
+| 100% | 150.0M | 57.1 | 200 | 140M | $52.35 |
+
+A mirror in `mirror.ctan.org`'s rotation is the 1% row and change. The free tier runs out at
+10M requests a month, 6.7% of the archive and five times what dotsrc carries; past it the rate
+is flat. Serving every request CTAN receives, 200 TB of them, costs $52 a month, all but $1.95
+of it operations. The same 200 TB of egress from S3 would be about $18,000.
+
+### Caching
+
+The zone bypasses cache (section 6). Cache storage and purges are free, so the only saving is
+Class B ops avoided and the only question is the hit ratio. Modelled 2026-08-29 over the
+511,027-object tree: Zipf popularity, ten origin-facing caches — Cloudflare caches per
+datacentre, and Tiered Cache, free on every plan, fronts the origin with an upper tier per
+region — and Poisson arrivals per object per cache per TTL window, where a window holding at
+least one request costs exactly one fill. Central case α=0.9 with ten caches; the band spans
+α=0.7 with thirty to α=1.1 with ten.
+
+| Share | Bypass | 24 h TTL | 48 h TTL | 1 week TTL |
+|---|---|---|---|---|
+| 1% | $1.95 | $1.95 (36% hit) | $1.95 (40%) | $1.95 (49%) |
+| 5% | $1.95 | $1.95 (47%) | $1.95 (52%) | $1.95 (62%) |
+| 10% | $3.75 | $1.95 (52%) | $1.95 (57%) | $1.95 (68%) |
+| 20% | $9.15 | $3.03 (57%) | $2.67 (63%) | $1.95 (74%) |
+| 50% | $25.35 | $8.07 (65%) | $6.27 (71%) | $3.39 (83%) |
+| 100% | $52.35 | $14.19 (71%) | $10.59 (78%) | $4.83 (88%) |
+
+At 100% the 24-hour bill spans $4.83 to $32.55 across the band and at 50% $2.31 to $17.79; at
+10% and below it never exceeds $3.03, because the free tier swallows the spread.
+
+Caching saves exactly nothing below 10M requests a month, whatever the TTL: the free tier
+already covers every read. Its first saving is $0.72 a month at 8% of CTAN, it reaches $6.12 at
+20%, and it takes every request the archive serves to reach $38. A one-hour TTL is worthless at
+any volume — no object is asked for often enough within one datacentre within one hour — and
+the seven objects over Cloudflare's 512 MB cacheable limit miss every time at every TTL.
+
+What turning it on costs is not dollars. A TTL over an hour without purging leaves `/timestamp`
+and the directory pages stale for the length of the TTL, which eats most of mirmon's 28-hour
+band at 24 hours and exceeds it at a week, so the 48-hour and one-week columns are not
+available to an hourly mirror at all. Purging instead means a Cloudflare API token (a sixth
+secret), `api.cloudflare.com` (a fifth endpoint) and 30 URLs per call on the Free plan — about
+200 calls for the busiest hour of the last year, plus that hour's directory pages — inside the
+sync path, to save $0 at the load this mirror sees.
+
 ## 4. Monitoring
 
 One healthchecks.io check, pinged once at the end of a successful run. A failed run is the
@@ -173,6 +250,10 @@ only alert.
 | Schedule | cron `42 * * * *`, timezone UTC, the minute the dispatcher fires |
 | Grace | 3 h |
 | Pinged by | `ping`, the last task in `sync` |
+| Configured by | `HEALTHCHECK_URL`, the check's ping URL, the one optional secret |
+
+The four `AWS_*` secrets are the whole requirement; `HEALTHCHECK_URL` is the fifth and only
+optional one. Without it `ping` is skipped and the mirror has no alert at all.
 
 The grace covers a queued run: a dispatch that arrives while a run is going waits for it
 (`concurrency`, one pending run per group), and a full `MAX_BATCHES` delta takes up to about
@@ -367,9 +448,9 @@ a phase is written whole, so anything else in it would go. Add to it rather than
 
 **If caching is ever wanted**, section 3 has the arithmetic: below 10M requests a month the
 free tier covers every read and caching saves nothing, a one-hour TTL is worthless because
-Cloudflare caches per datacentre, and only a 24-hour TTL pays — first at around 100M
-requests a month, which is roughly ten times what a CTAN mirror sees. Turning it on also
-means purging every changed key after each batch, which the pipeline no longer does.
+Cloudflare caches per datacentre, and a 24-hour TTL first pays at 12M requests a month — six
+times what a measured mirror carries — for $0.72. Turning it on also means purging every
+changed key after each batch, which the pipeline does not do.
 
 ## 7. Why directory pages
 

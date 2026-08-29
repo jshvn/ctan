@@ -82,31 +82,24 @@ nothing for bandwidth, so traffic doesn't move the bill.
 | `AWS_ENDPOINT_URL` | `https://<account-id>.r2.cloudflarestorage.com` |
 | `AWS_REGION` | `auto` |
 
-## Optional configuration
+To test or run locally:
 
-| Secret | What it turns on |
-| --- | --- |
-| `HEALTHCHECK_URL` | A healthchecks.io ping URL. The last step of every run pings it |
+```sh
+task run -- task --dry sync
+task run -- task sync
+```
 
-**Alerting.** `HEALTHCHECK_URL` is the only alert the mirror has: a failed or missing run
-stops the ping, and healthchecks.io mails you when the grace passes. Point a check at cron
-`42 * * * *` UTC with a 3 hour grace, which absorbs a queued run and a full one. It is also
-the only thing watching whatever starts your runs. Unset, a run that stops arriving tells
-nobody. Pause the check before a seed — a multi-hour run outlasts any sensible grace.
+## Reference
 
-**Zone rules.** Four rules are worth setting on the zone by hand: HTML rewriters off (the
-one that matters — Cloudflare otherwise alters every HTML file it serves), cache bypass, `/`
-rewritten to `/index.html`, and every other directory URL rewritten to the mirror's own page
-for that directory. The pipeline does not touch
-Cloudflare and needs no zone token; section 6 of
-[`docs/reference.md`](docs/reference.md) has each rule, its expression and its settings.
-Skip them and every run still syncs, but `/` and every directory URL are 404s and HTML is
-served rewritten.
+Please see [`docs/reference.md`](docs/reference.md) for the full repo documentation. It contains:
 
-To run the pipeline locally, `task run -- task --dry sync` renders it inside the toolbox
-image (Apple `container` or Docker); with `AWS_*` variables exported, `task run -- task sync`
-runs it for real. Every run happens in that image, the hourly one included, so a local run
-and a run in Actions differ only in wall clock.
+* **Baseline** — the measured tree, churn, busiest hours
+* **Limits** — R2, Cloudflare, Actions, dante
+* **Cost** — the bill line by line
+* **Monitoring** — the healthchecks.io check and its settings
+* **Runbook** — failed runs, seeds, rebuilds, rotations
+* **Zone configuration** — every rule, with its expression
+* **Why directory pages** — listings drawn under two keys
 
 Pull requests are welcome.
 
