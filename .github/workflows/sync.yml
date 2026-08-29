@@ -14,6 +14,10 @@ on:
         description: 'Batches to work this run (4 GB each; the rest wait for the next hour)'
         type: string
         default: '4'
+  # To use GitHub Actions scheduling, uncomment the following lines and
+  # remove the `workflow_dispatch` section above. The cron syntax is UTC.
+  # schedule:
+  #   - cron: '42 * * * *'
 permissions:
   contents: read
 concurrency:

@@ -63,12 +63,8 @@ nothing for bandwidth, so traffic doesn't move the bill.
 4. Actions -> sync -> Run workflow, with `seed` checked and `max_batches` at 40. The first
    run uploads everything (about 140 GB, a few hours); every run after it pushes the hourly
    delta. Storage past R2's free 10 GB costs about $1.95 a month.
-5. Give it something to start it hourly. `sync.yml` has one trigger, `workflow_dispatch`, so
-   a fork runs only when something asks it to: add a `schedule:` block to the workflow for
-   the zero-setup option, or point a scheduler at the dispatch API, which is what this mirror
-   does — GitHub's own cron delivered 3 of 51 hourly slots here, so
-   [`jshvn/dispatch`](https://github.com/jshvn/dispatch) fires it from a Cloudflare Workflow
-   instead.
+5. Uncomment the `schedule:` block in `sync.yml` with a minute per hour to run the sync
+   automation.
 
 | Secret | What it is |
 | --- | --- |
