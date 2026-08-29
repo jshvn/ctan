@@ -31,12 +31,21 @@ To go back to CTAN's mirror rotation: `tlmgr option repository ctan`.
 
 ## How it works
 
-Every hour GitHub Actions lists CTAN's master (dante), diffs the listing against the listing
-the previous run left in the bucket, fetches only the changed files in batches, verifies the
-signed TeX Live files (`texlive.tlpdb`, the installers and the `tlmgr` updaters, with the TeX
-Live key fingerprint pinned) and every package container against the tlpdb's checksums, and
-uploads. Every step is in the
-[`Taskfile.yml`](https://github.com/jshvn/ctan/blob/main/Taskfile.yml).
+On an hourly schedule this GitHub action is triggered and runs the following pipeline.
+Every step is a task in [`Taskfile.yml`](https://github.com/jshvn/ctan/blob/main/Taskfile.yml):
+
+1. **`clock` `list` `state` `rebuild`** — stamp the hour, list CTAN's master (dante), and
+   fetch the listing the previous run left in the bucket, rebuilding it if it went missing.
+2. **`diff` `plan`** — take what upstream has and the state lacks, and split it into batches
+   of at most 4 GB. The mirror is never a local copy: the runner has 14 GB, the tree has 140.
+3. **`tlpdb` `batches`** — per batch, rsync the files, check the signed TeX Live control
+   files against a pinned key fingerprint and every package container against the tlpdb's
+   checksums, upload, and write the new state. A run that dies repeats one batch, not all.
+4. **`delete` `reconcile`** — drop the keys that left upstream; once a day, sweep the bucket
+   against the state for anything neither owns.
+5. **`index`** — redraw the directory pages the run changed, since R2 has no listings.
+6. **`smoke` `report` `ping`** — read a sample of the run's keys back over the public domain,
+   summarise what landed, and ping healthchecks.io. Silence is the alert.
 
 **Is it fresh?**
 
